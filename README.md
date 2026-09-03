@@ -50,7 +50,7 @@ El servicio `backup` corre en segundo plano y genera un respaldo cifrado de la b
 - Cifrado: Encrypt-then-MAC con HMAC-SHA256, con `BACKUP_ENCRYPTION_KEY` — una clave completamente separada de las demás (para que comprometer la app no implique comprometer los backups).
 - Retención: los últimos 14 backups (`BACKUP_RETENTION_COUNT`).
 - Restaurar (dos formas, ambas piden la `BACKUP_ENCRYPTION_KEY` correcta):
-  - **Desde la UI** (recomendado): Configuración → *Respaldo cifrado* → *Restaurar desde archivo*. Solo Administrador, pide MFA, guarda una copia de la base actual (`securevault-pre-restore-*.db` en el volumen de datos) antes de sobrescribir y queda auditado. Reemplaza la base viva sin reiniciar el backend (API de backup online de SQLite).
+  - **Desde la UI** (recomendado): Configuración → *Respaldo cifrado* → *Restaurar desde archivo*. Solo Administrador, pide MFA, guarda una copia de la base actual (`securevault-pre-restore-*.db` en el volumen de datos) antes de sobrescribir y queda auditado. Reemplaza la base viva sin reiniciar el backend (API de backup online de SQLite). Como el restore también reemplaza la tabla de sesiones, al terminar se cierra tu sesión y la UI te lleva de vuelta al login a los 5 s.
   - **Por línea de comandos:**
     ```powershell
     docker compose run --rm backend python scripts/restore_backup.py /backups/securevault-XXXXXXXX-XXXXXX.enc /app/data/securevault.db

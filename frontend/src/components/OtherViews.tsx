@@ -284,7 +284,7 @@ export function SettingsView({ onUpdateLogo, onDownloadBackup, onRestoreBackup, 
             <div className="mt-5 border-t border-slate-200/70 pt-4">
               <h4 className="font-bold text-slate-900 flex items-center gap-2"><Upload className="h-3.5 w-3.5 text-amber-600" /> Restaurar desde archivo</h4>
               <p className="text-slate-600 mt-1 font-normal">
-                Sube un archivo <code className="font-mono">.enc</code> para reemplazar la base actual (usuarios, portales, auditoría). Las contraseñas en Vault no se tocan. Se pedirá MFA y se guardará una copia de la base actual antes de sobrescribir.
+                Sube un archivo <code className="font-mono">.enc</code> para reemplazar la base actual (usuarios, portales, auditoría). Las contraseñas en Vault no se tocan. Se pedirá MFA y se guardará una copia de la base actual antes de sobrescribir. Al terminar tu sesión se cierra y tendrás que volver a iniciar sesión.
               </p>
               <input
                 ref={restoreInputRef}
