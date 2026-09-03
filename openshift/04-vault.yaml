@@ -1,0 +1,109 @@
+# 04 — HashiCorp Vault (1 réplica, storage file sobre PVC)
+#
+# Reemplazá REGISTRY. `vault` = imagen oficial hashicorp/vault:1.17 espejada.
+# `securevault-backend` se reutiliza para el sidecar que desella tras reinicios.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: vault}
+spec:
+  selector:
+    app.kubernetes.io/name: vault
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: vault}
+spec:
+  serviceName: vault
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  template:
+    metadata:
+      labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: vault}
+    spec:
+      containers:
+        - name: vault
+          image: REGISTRY/vault:1.17
+          # Invocar `vault server` directo (no el docker-entrypoint.sh): el
+          # entrypoint oficial produjo "address already in use" en el listener
+          # en pruebas previas del proyecto.
+          command: ["vault"]
+          args: ["server", "-config=/vault/config/vault.hcl"]
+          ports:
+            - {name: http, containerPort: 8200}
+          env:
+            - {name: VAULT_ADDR, value: "http://127.0.0.1:8200"}
+            - {name: SKIP_CHOWN, value: "true"}
+            - {name: SKIP_SETCAP, value: "true"}
+            - {name: HOME, value: "/tmp"}
+          volumeMounts:
+            - {name: data, mountPath: /vault/data}
+            - {name: config, mountPath: /vault/config, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+          readinessProbe:
+            httpGet: {path: "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204", port: 8200}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+
+        # Sidecar: cuando Vault arranca sellado (reinicio del pod) y el Secret de
+        # llaves ya existe, lo desella. En el primer despliegue el Secret todavía
+        # no existe -> este loop falla en silencio hasta que corre el Job 05.
+        - name: unsealer
+          image: REGISTRY/securevault-backend:latest
+          command:
+            - python
+            - -c
+            - |
+              import json, time, urllib.request
+              U = "http://127.0.0.1:8200"
+              while True:
+                  try:
+                      h = json.load(urllib.request.urlopen(U + "/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200", timeout=3))
+                      if h.get("initialized") and h.get("sealed"):
+                          key = json.load(open("/keys/vault-keys.json"))["unseal_key"]
+                          req = urllib.request.Request(U + "/v1/sys/unseal", data=json.dumps({"key": key}).encode(),
+                                                       headers={"Content-Type": "application/json"}, method="PUT")
+                          urllib.request.urlopen(req, timeout=5)
+                          print("[unsealer] Vault desellado", flush=True)
+                  except FileNotFoundError:
+                      pass  # el Secret de llaves aún no existe
+                  except Exception as e:
+                      print("[unsealer]", e, flush=True)
+                  time.sleep(15)
+          volumeMounts:
+            - {name: vault-keys, mountPath: /keys, readOnly: true}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        # PVC nombrado (03-pvcs) en vez de volumeClaimTemplates: nombre estable,
+        # fácil de respaldar/restaurar a mano.
+        - name: data
+          persistentVolumeClaim:
+            claimName: securevault-vault-data
+        - name: config
+          configMap:
+            name: securevault-vault-config
+            items: [{key: vault.hcl, path: vault.hcl}]
+        - name: vault-keys
+          secret:
+            secretName: securevault-vault-keys
+            optional: true
+            items: [{key: vault-keys.json, path: vault-keys.json}]

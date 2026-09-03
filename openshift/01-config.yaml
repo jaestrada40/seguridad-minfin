@@ -1,0 +1,263 @@
+# 01 — ConfigMaps (todo lo NO secreto)
+#
+# Reemplazá:
+#   APP_SECRET_PATH  ruta secreta bajo la que se sirve la app ("/" también
+#                    sirve pero pierde la ofuscación; usá algo tipo /mf-ab12cd)
+#   CORS_ORIGIN      https://<APP_HOST> (el mismo host del Route, 09-route.yaml)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: securevault-config
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault}
+data:
+  APP_SECRET_PATH: "/CAMBIAR-ESTA-RUTA"
+  CORS_ORIGIN: "https://APP_HOST"
+  COOKIE_SECURE: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: securevault-proxy-caddyfile
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault}
+data:
+  Caddyfile: |
+    # El Route de OpenShift termina TLS (edge); acá Caddy escucha HTTP en :8080.
+    {
+      admin off
+      auto_https off
+      persist_config off
+    }
+
+    :8080 {
+      handle /api/* {
+        reverse_proxy backend:8000 {
+          header_down Server nginx
+        }
+      }
+      handle /health {
+        reverse_proxy backend:8000 {
+          header_down Server nginx
+        }
+      }
+
+      # La ruta secreta sin barra final redirige a la versión con barra.
+      @bare path {$APP_SECRET_PATH}
+      redir @bare {$APP_SECRET_PATH}/ 308
+
+      # Todo lo que cuelga de la ruta secreta -> frontend (con strip del prefijo;
+      # el bundle usa rutas de assets relativas, así que resuelve bien).
+      handle_path {$APP_SECRET_PATH}/* {
+        header {
+          Strict-Transport-Security "max-age=31536000; includeSubDomains"
+          X-Content-Type-Options "nosniff"
+          X-Frame-Options "DENY"
+          Referrer-Policy "same-origin"
+          Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+          Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+        }
+        reverse_proxy frontend:8080
+      }
+
+      # Cualquier otra ruta (incluida "/") se hace pasar por un nginx pelado.
+      handle {
+        header {
+          Server "nginx"
+          -X-Powered-By
+        }
+        respond 404 {
+          body `<html>
+    <head><title>404 Not Found</title></head>
+    <body>
+    <center><h1>404 Not Found</h1></center>
+    <hr><center>nginx</center>
+    </body>
+    </html>
+    `
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: securevault-vault-config
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault}
+data:
+  vault.hcl: |
+    storage "file" {
+      path = "/vault/data"
+    }
+    listener "tcp" {
+      address     = "0.0.0.0:8200"
+      tls_disable = true
+    }
+    api_addr      = "http://vault:8200"
+    ui            = false
+    disable_mlock = true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: securevault-vault-bootstrap
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault}
+data:
+  # Copia de vault/bootstrap/bootstrap.py — si cambia el original, regenerá con:
+  #   oc create configmap securevault-vault-bootstrap \
+  #     --from-file=bootstrap.py=vault/bootstrap/bootstrap.py \
+  #     --dry-run=client -o yaml | oc apply -f -
+  bootstrap.py: |
+    """Inicializa/desella Vault y aprovisiona un token acotado para el backend."""
+    import base64
+    import json
+    import os
+    import ssl
+    import time
+    import urllib.error
+    import urllib.request
+
+    VAULT_ADDR = os.getenv("VAULT_ADDR", "http://vault:8200")
+    KEYS_BACKEND = os.getenv("KEYS_BACKEND", "file")
+    KEYS_PATH = os.getenv("VAULT_KEYS_PATH", "/keys/vault-keys.json")
+    KEYS_SECRET_NAME = os.getenv("KEYS_SECRET_NAME", "securevault-vault-keys")
+    KEYS_SECRET_FIELD = "vault-keys.json"
+    _SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+    BACKEND_POLICY = "securevault-backend"
+    BACKEND_POLICY_HCL = """
+    path "secret/data/portals/*" {
+      capabilities = ["create", "read", "update", "delete"]
+    }
+    path "secret/metadata/portals/*" {
+      capabilities = ["read", "list", "delete"]
+    }
+    """
+
+
+    def vault_request(method, path, token=None, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(f"{VAULT_ADDR}{path}", data=data, method=method)
+        req.add_header("Content-Type", "application/json")
+        if token:
+            req.add_header("X-Vault-Token", token)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"{method} {path} -> {e.code}: {e.read().decode()}")
+
+
+    def wait_for_vault():
+        for _ in range(60):
+            try:
+                urllib.request.urlopen(f"{VAULT_ADDR}/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200", timeout=3)
+                return
+            except Exception:
+                time.sleep(2)
+        raise RuntimeError("Vault no respondió a tiempo")
+
+
+    def _k8s_ctx():
+        with open(f"{_SA_DIR}/namespace", encoding="utf-8") as f:
+            namespace = f.read().strip()
+        with open(f"{_SA_DIR}/token", encoding="utf-8") as f:
+            token = f.read().strip()
+        host = os.getenv("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+        port = os.getenv("KUBERNETES_SERVICE_PORT", "443")
+        return f"https://{host}:{port}", namespace, token
+
+
+    def _k8s_request(method, path, body=None, content_type="application/json"):
+        api, _, token = _k8s_ctx()
+        ctx = ssl.create_default_context(cafile=f"{_SA_DIR}/ca.crt")
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(f"{api}{path}", data=data, method=method)
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("Accept", "application/json")
+        if data is not None:
+            req.add_header("Content-Type", content_type)
+        try:
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                return resp.status, json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+
+    def load_keys():
+        if KEYS_BACKEND == "k8s-secret":
+            _, namespace, _ = _k8s_ctx()
+            status, secret = _k8s_request("GET", f"/api/v1/namespaces/{namespace}/secrets/{KEYS_SECRET_NAME}")
+            if status == 404:
+                return {}
+            if status != 200:
+                raise RuntimeError(f"No se pudo leer el Secret {KEYS_SECRET_NAME}: {status} {secret}")
+            raw = (secret.get("data") or {}).get(KEYS_SECRET_FIELD)
+            return json.loads(base64.b64decode(raw)) if raw else {}
+        if os.path.exists(KEYS_PATH):
+            with open(KEYS_PATH, encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+
+
+    def save_keys(keys):
+        if KEYS_BACKEND == "k8s-secret":
+            _, namespace, _ = _k8s_ctx()
+            payload = base64.b64encode(json.dumps(keys, indent=2).encode()).decode()
+            status, _ = _k8s_request(
+                "PATCH",
+                f"/api/v1/namespaces/{namespace}/secrets/{KEYS_SECRET_NAME}",
+                {"data": {KEYS_SECRET_FIELD: payload}},
+                content_type="application/merge-patch+json",
+            )
+            if status == 404:
+                status, resp = _k8s_request(
+                    "POST",
+                    f"/api/v1/namespaces/{namespace}/secrets",
+                    {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": KEYS_SECRET_NAME},
+                     "type": "Opaque", "data": {KEYS_SECRET_FIELD: payload}},
+                )
+                if status not in (200, 201):
+                    raise RuntimeError(f"No se pudo crear el Secret {KEYS_SECRET_NAME}: {status} {resp}")
+            elif status != 200:
+                raise RuntimeError(f"No se pudo actualizar el Secret {KEYS_SECRET_NAME}: {status}")
+            return
+        os.makedirs(os.path.dirname(KEYS_PATH), exist_ok=True)
+        with open(KEYS_PATH, "w", encoding="utf-8") as f:
+            json.dump(keys, f, indent=2)
+        os.chmod(KEYS_PATH, 0o600)
+
+
+    def main():
+        wait_for_vault()
+        health = vault_request("GET", "/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200")
+        keys = load_keys()
+        if not health.get("initialized"):
+            print("Vault no inicializado. Inicializando (1 clave de unseal)...")
+            init = vault_request("PUT", "/v1/sys/init", body={"secret_shares": 1, "secret_threshold": 1})
+            keys["unseal_key"] = init["keys"][0]
+            keys["root_token"] = init["root_token"]
+            save_keys(keys)
+        health = vault_request("GET", "/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200")
+        if health.get("sealed"):
+            print("Vault sellado. Desellando...")
+            vault_request("PUT", "/v1/sys/unseal", body={"key": keys["unseal_key"]})
+        root_token = keys["root_token"]
+        if "backend_token" not in keys:
+            print("Aprovisionando policy y token del backend...")
+            vault_request("POST", "/v1/sys/mounts/secret", token=root_token, body={"type": "kv", "options": {"version": "2"}})
+            vault_request("PUT", f"/v1/sys/policies/acl/{BACKEND_POLICY}", token=root_token, body={"policy": BACKEND_POLICY_HCL})
+            token_resp = vault_request("POST", "/v1/auth/token/create", token=root_token,
+                                       body={"policies": [BACKEND_POLICY], "ttl": "768h", "renewable": True, "display_name": "securevault-backend"})
+            keys["backend_token"] = token_resp["auth"]["client_token"]
+            save_keys(keys)
+        else:
+            print("Token del backend ya existía.")
+        print("Bootstrap de Vault completo.")
+
+
+    if __name__ == "__main__":
+        main()

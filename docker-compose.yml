@@ -72,7 +72,9 @@ services:
         condition: service_started
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      target: dev
     environment:
       APP_SECRET_PATH: ${APP_SECRET_PATH:-/}
     ports:

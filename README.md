@@ -9,7 +9,7 @@ Gestor interno de credenciales para portales WordPress y aplicaciones internas. 
 - Frontend: React + TypeScript + Vite
 - Proxy HTTPS: Caddy (certificado autofirmado local)
 - Backups: cifrados automáticos en un volumen separado
-- Ejecución local: Docker Compose
+- Ejecución local: Docker Compose · Despliegue: OpenShift (`openshift/`)
 
 > El backend no usa FastAPI, SQLAlchemy ni ningún paquete de PyPI a propósito: así el build de Docker no necesita acceso a `pypi.org`, que está bloqueado en la red de oficina. La comunicación con Vault se hace con `urllib` (API REST plana), sin el cliente oficial `hvac`.
 
@@ -75,7 +75,13 @@ CORS_ORIGIN=http://localhost:3000
 - `APP_SECRET_PATH=/` (por defecto): la app está en la raíz, `https://localhost:8443/`.
 - `APP_SECRET_PATH=/mf-XXXXXX` (o cualquier ruta): `https://localhost:8443/` y cualquier otra ruta devuelven **404**; solo `https://localhost:8443/mf-XXXXXX/` lleva al login.
 
-Es una capa extra para que escáneres automáticos y curiosos vean un 404, **no** un reemplazo del login + MFA. Guarda la ruta en tu gestor de contraseñas y **bookmarkéala con la barra final**. Si se filtra o la olvidas, cambia el valor en `.env` y `docker compose --profile backend up -d --build frontend caddy`. `/api/*` y `/health` siguen en la raíz (necesarios para el healthcheck y las llamadas del propio frontend).
+Es una capa extra para que escáneres automáticos y curiosos vean un 404, **no** un reemplazo del login + MFA. Guarda la ruta en tu gestor de contraseñas y **bookmarkéala con la barra final**. Si se filtra o la olvidas, cambia el valor en `.env` y `docker compose --profile backend up -d --build frontend caddy`. `/api/*` y `/health` siguen en la raíz (necesarios para el healthcheck y las llamadas del propio frontend). El 404 se hace pasar por el de un nginx pelado (`Server: nginx`).
+
+## Despliegue en OpenShift
+
+Manifiestos y guía en [`openshift/`](openshift/README.md): 11 archivos numerados (`00-…` a `10-…`) que se aplican en orden con `oc apply`, más un README con las imágenes a subir al registry y los placeholders a reemplazar (`REGISTRY`, `APP_HOST`, ruta secreta, namespace).
+
+Resumen: 3 imágenes propias (`securevault-backend`, `securevault-frontend`, y las oficiales `vault`/`caddy` espejadas) → Vault como StatefulSet con auto-unseal → Job de bootstrap → backend/frontend/proxy como Deployments → Route con TLS edge → CronJob de backup diario.
 
 ## Roles y permisos
 

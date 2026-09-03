@@ -1,0 +1,26 @@
+# 09 — Route (entrada pública). Reemplazá APP_HOST por el hostname real.
+#
+# TLS: `edge` = OpenShift termina TLS con el certificado del router (o el que
+# pongas en spec.tls). Si tu política exige certificado propio, agregá
+# spec.tls.certificate / key / caCertificate, o usá un Route `reencrypt` y
+# poné TLS también en el proxy.
+#
+# El host raíz "/" responde 404 (nginx falso): eso es intencional. La app vive
+# en https://APP_HOST<APP_SECRET_PATH>/ .
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: securevault
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault}
+spec:
+  host: APP_HOST
+  to:
+    kind: Service
+    name: proxy
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

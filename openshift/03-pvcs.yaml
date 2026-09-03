@@ -1,0 +1,47 @@
+# 03 — Almacenamiento persistente
+#
+# Ajustá storageClassName al de tu cluster (o borralo para usar el default).
+# Todos son RWO (un solo pod escribe cada uno): el backend es 1 réplica, Vault
+# es 1 réplica, y el CronJob de backup comparte securevault-backups con el
+# backend (montado :ro en el backend, rw en el CronJob) — si tu RWO no permite
+# multi-attach en el mismo nodo, programá el CronJob con nodeAffinity al nodo
+# del backend, o cambialo a RWX.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: securevault-backend-data
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+  # storageClassName: gp3-csi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: securevault-vault-data
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+  # storageClassName: gp3-csi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: securevault-backups
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+  # storageClassName: gp3-csi

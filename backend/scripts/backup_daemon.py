@@ -72,6 +72,15 @@ def run_backup() -> None:
 def main() -> None:
     from app.backup_crypto import require_key
     require_key(BACKUP_ENCRYPTION_KEY)
+
+    # --once: una sola pasada y termina (para un CronJob de OpenShift/k8s en vez
+    # del loop). Sale con código != 0 si el backup falla, para que el CronJob
+    # lo marque como fallido.
+    if "--once" in sys.argv:
+        print(f"[backup] Pasada única. Destino: {BACKUP_DIR}", flush=True)
+        run_backup()
+        return
+
     print(f"[backup] Iniciando daemon. Intervalo: {INTERVAL_SECONDS}s. Destino: {BACKUP_DIR}", flush=True)
     while True:
         try:
