@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { X, ExternalLink, Copy, Check, Globe, AppWindow, AlertCircle, Eye, ToggleLeft, ToggleRight, Lock } from 'lucide-react';
+import { X, ExternalLink, Copy, Check, AlertCircle, Eye, ToggleLeft, ToggleRight, Lock } from 'lucide-react';
 import { Portal, UserRole } from '../types';
+import { getCategoryStyle } from '../utils/categoryStyle';
 
 interface PortalDetailsModalProps {
   portal: Portal | null;
@@ -38,7 +39,8 @@ export function PortalDetailsModal({ portal, isOpen, onClose, onCopyUser, onCopy
     setTimeout(() => setCopiedPassword(false), 2000);
   };
 
-  const isWordpress = portal.category === 'WordPress';
+  const categoryStyle = getCategoryStyle(portal.category);
+  const CategoryIcon = categoryStyle.icon;
   const isActive = portal.status === 'Activo';
 
   return (
@@ -52,11 +54,9 @@ export function PortalDetailsModal({ portal, isOpen, onClose, onCopyUser, onCopy
         <div className="flex items-start justify-between border-b border-slate-100 pb-4">
           <div className="flex items-center gap-3">
             <div
-              className={`flex h-12 w-12 items-center justify-center rounded-2xl border ${
-                isWordpress ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-purple-50 text-purple-600 border-purple-100'
-              } shadow-2xs`}
+              className={`flex h-12 w-12 items-center justify-center rounded-2xl border ${categoryStyle.panel} shadow-2xs`}
             >
-              {isWordpress ? <Globe className="h-6 w-6" /> : <AppWindow className="h-6 w-6" />}
+              <CategoryIcon className="h-6 w-6" />
             </div>
             <div>
               <div className="flex items-center gap-2">

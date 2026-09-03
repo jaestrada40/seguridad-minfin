@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { readSheet } from 'read-excel-file/browser';
+import writeXlsxFile from 'write-excel-file/browser';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { MetricsPanel } from './components/MetricsPanel';
@@ -15,6 +16,8 @@ import { ActivityView, UsersView, SettingsView } from './components/OtherViews';
 import { AuthScreen, LoginStepResult, MfaConfirmResult } from './components/AuthScreen';
 import { Portal, NavTab, FilterCategory, FilterStatus, SortOption, ActivityLog, UserSession, AppNotification, UserProfile, SystemInfo } from './types';
 import { FolderSearch, Plus, RotateCcw } from 'lucide-react';
+
+const PORTAL_CATEGORIES = ['WordPress', 'Joomla', 'Aplicación'] as const;
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
@@ -32,6 +35,8 @@ export default function App() {
   const [categoryFilter, setCategoryFilter] = useState<FilterCategory>('Todos');
   const [statusFilter, setStatusFilter] = useState<FilterStatus>('Todos');
   const [sortOption, setSortOption] = useState<SortOption>('name-asc');
+  const [currentPage, setCurrentPage] = useState(1);
+  const PORTALS_PAGE_SIZE = 9;
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingPortal, setEditingPortal] = useState<Portal | null>(null);
@@ -152,10 +157,24 @@ export default function App() {
       });
   }, [portals, searchQuery, categoryFilter, statusFilter, sortOption]);
 
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, categoryFilter, statusFilter, sortOption]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredPortals.length / PORTALS_PAGE_SIZE));
+  const paginatedPortals = useMemo(
+    () => filteredPortals.slice((currentPage - 1) * PORTALS_PAGE_SIZE, currentPage * PORTALS_PAGE_SIZE),
+    [filteredPortals, currentPage]
+  );
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
   const metrics = useMemo(
     () => ({
       totalVisible: filteredPortals.length,
       wordPressCount: portals.filter((p) => p.category === 'WordPress').length,
+      joomlaCount: portals.filter((p) => p.category === 'Joomla').length,
       appsCount: portals.filter((p) => p.category === 'Aplicación').length,
       activeCount: portals.filter((p) => p.status === 'Activo').length,
     }),
@@ -336,18 +355,53 @@ export default function App() {
         if (headerIndex < 0) throw new Error(`${file.name}: no se encontró la columna CUENTA`);
         const headers = sheet[headerIndex].map((v) => String(v || '').trim().toUpperCase());
         const col = (name: string) => headers.indexOf(name);
-        const cuenta = col('CUENTA'), enlace = col('ENLACE'), admin = col('ADMIN'), usuario = col('NOMBRE DE USUARIO'), password = col('CONTRASEÑA');
-        if ([cuenta, enlace, admin, usuario, password].some((x) => x < 0)) throw new Error(`${file.name}: faltan columnas requeridas`);
+        const cuenta = col('CUENTA'), enlace = col('ENLACE'), admin = col('ADMIN'), usuario = col('NOMBRE DE USUARIO'), password = col('CONTRASEÑA'), tecnologia = col('TECNOLOGÍA');
+        if ([cuenta, enlace, admin, usuario, password, tecnologia].some((x) => x < 0)) throw new Error(`${file.name}: faltan columnas requeridas (CUENTA, ENLACE, ADMIN, TECNOLOGÍA, NOMBRE DE USUARIO, CONTRASEÑA)`);
         for (const row of sheet.slice(headerIndex + 1)) {
           if (!row[cuenta]) continue;
           const base = String(row[enlace] || '').replace(/\/+$/, ''); const path = String(row[admin] || '').replace(/^\/+/, '');
-          rows.push({ name: String(row[cuenta]), url: `${base}/${path}`, username: String(row[usuario] || ''), password: String(row[password] || '') });
+          const tech = PORTAL_CATEGORIES.find((c) => c.toUpperCase() === String(row[tecnologia] || '').trim().toUpperCase());
+          if (!tech) throw new Error(`${file.name}: TECNOLOGÍA inválida en fila "${row[cuenta]}" (usar ${PORTAL_CATEGORIES.join(', ')})`);
+          rows.push({ name: String(row[cuenta]), category: tech, url: `${base}/${path}`, username: String(row[usuario] || ''), password: String(row[password] || '') });
         }
       }
       if (!rows.length) throw new Error('El archivo no contiene filas importables.');
       setImportPreview(rows);
     } catch (error) { addToast('warning', 'No se pudo importar Excel', error instanceof Error ? error.message : undefined); }
     finally { if (importInputRef.current) importInputRef.current.value = ''; }
+  };
+
+  const handleDownloadTemplate = async () => {
+    const headerRow = ['CUENTA', 'ENLACE', 'ADMIN', 'TECNOLOGÍA', 'NOMBRE DE USUARIO', 'CONTRASEÑA'].map((value) => ({ value, fontWeight: 'bold' as const }));
+    const sampleRows: (string | undefined)[][] = [
+      ['Portal de Recursos Humanos', 'https://rrhh.minfin.gob.gt', 'wp-admin', 'WordPress', 'admin-rrhh', 'Cambiar-esta-clave-123'],
+      ['Sitio institucional', 'https://portal.minfin.gob.gt', 'administrator', 'Joomla', 'admin-portal', 'Cambiar-esta-clave-123'],
+      ['Sistema Integrado de Finanzas', 'https://sicoin.minfin.gob.gt', 'login', 'Aplicación', 'consulta-demo', ''],
+    ];
+    const file = await writeXlsxFile(
+      [headerRow, ...sampleRows.map((row) => row.map((value) => ({ value })))],
+      { columns: [{ width: 30 }, { width: 30 }, { width: 16 }, { width: 14 }, { width: 22 }, { width: 22 }] }
+    );
+    await file.toFile('plantilla-importacion-portales.xlsx');
+  };
+
+  const handleExportPortals = async () => {
+    if (!portals.length) { addToast('warning', 'Nada que exportar', 'No hay portales en el catálogo.'); return; }
+    const headerRow = ['CUENTA', 'TECNOLOGÍA', 'URL', 'USUARIO', 'DEPARTAMENTO', 'ESTADO', 'CONTRASEÑA GUARDADA'].map((value) => ({ value, fontWeight: 'bold' as const }));
+    const dataRows = portals.map((p) => [
+      { value: p.name },
+      { value: p.category },
+      { value: p.url },
+      { value: p.username },
+      { value: p.department || '' },
+      { value: p.status },
+      { value: p.hasPassword ? 'Sí' : 'No' },
+    ]);
+    const file = await writeXlsxFile([headerRow, ...dataRows], {
+      columns: [{ width: 30 }, { width: 14 }, { width: 34 }, { width: 22 }, { width: 24 }, { width: 12 }, { width: 18 }],
+    });
+    await file.toFile(`portales-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    addToast('success', 'Listado exportado', `${portals.length} portales exportados a Excel.`);
   };
 
   const completeMfa = async (code: string): Promise<string | null> => {
@@ -447,7 +501,7 @@ export default function App() {
         <main className="flex-1 p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl w-full mx-auto">
           {currentTab === 'portales' && (
             <>
-              <MetricsPanel totalVisible={metrics.totalVisible} wordPressCount={metrics.wordPressCount} appsCount={metrics.appsCount} activeCount={metrics.activeCount} />
+              <MetricsPanel totalVisible={metrics.totalVisible} wordPressCount={metrics.wordPressCount} joomlaCount={metrics.joomlaCount} appsCount={metrics.appsCount} activeCount={metrics.activeCount} />
               <SecurityBanner />
               <Toolbar
                 searchQuery={searchQuery}
@@ -469,31 +523,88 @@ export default function App() {
                     {!isAdmin && <span className="text-[10px] bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-full font-bold">Modo Consulta y Acceso</span>}
                   </div>
                   <span className="text-[11px] font-semibold text-indigo-600 bg-indigo-50/80 border border-indigo-100/80 px-2.5 py-0.5 rounded-full">Red local activa</span>
-                  {isAdmin && <><input ref={importInputRef} type="file" accept=".xlsx" multiple className="hidden" onChange={(e) => handleImportExcel(e.target.files)} /><button onClick={() => importInputRef.current?.click()} className="rounded-xl border border-indigo-200 bg-white px-3 py-1.5 text-xs font-bold text-indigo-700">Importar Excel</button></>}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button onClick={handleExportPortals} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">Exportar Excel</button>
+                    {isAdmin && (
+                      <>
+                        <button onClick={handleDownloadTemplate} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">Descargar plantilla</button>
+                        <input ref={importInputRef} type="file" accept=".xlsx" multiple className="hidden" onChange={(e) => handleImportExcel(e.target.files)} />
+                        <button onClick={() => importInputRef.current?.click()} className="rounded-xl border border-indigo-200 bg-white px-3 py-1.5 text-xs font-bold text-indigo-700">Importar Excel</button>
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 {filteredPortals.length > 0 ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                    {filteredPortals.map((portal) => (
-                      <PortalCard
-                        key={portal.id}
-                        portal={portal}
-                        currentUserRole={currentUser.role}
-                        onOpenPortal={handleOpenPortal}
-                        onCopyUser={handleCopyUser}
-                        onCopyPassword={handleCopyPassword}
-                        onViewDetails={(p) => {
-                          setSelectedPortal(p);
-                          setIsDetailsModalOpen(true);
-                        }}
-                        onToggleStatus={handleToggleStatus}
-                        onDeletePortal={handleDeletePortal}
-                        onEditPortal={(portal) => { setEditingPortal(portal); setIsAddModalOpen(true); }}
-                      />
-                    ))}
-                  </div>
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                      {paginatedPortals.map((portal) => (
+                        <PortalCard
+                          key={portal.id}
+                          portal={portal}
+                          currentUserRole={currentUser.role}
+                          onOpenPortal={handleOpenPortal}
+                          onCopyUser={handleCopyUser}
+                          onCopyPassword={handleCopyPassword}
+                          onViewDetails={(p) => {
+                            setSelectedPortal(p);
+                            setIsDetailsModalOpen(true);
+                          }}
+                          onToggleStatus={handleToggleStatus}
+                          onDeletePortal={handleDeletePortal}
+                          onEditPortal={(portal) => { setEditingPortal(portal); setIsAddModalOpen(true); }}
+                        />
+                      ))}
+                    </div>
+
+                    {totalPages > 1 && (
+                      <div id="portal-pagination" className="mt-6 flex items-center justify-between gap-3">
+                        <p className="text-xs text-slate-500 font-medium">
+                          Página {currentPage} de {totalPages} · {filteredPortals.length} portales
+                        </p>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                            disabled={currentPage === 1}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                          >
+                            Anterior
+                          </button>
+                          {Array.from({ length: totalPages }, (_, i) => i + 1)
+                            .filter((p) => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 1)
+                            .reduce<number[]>((acc, p) => {
+                              if (acc.length && p - acc[acc.length - 1] > 1) acc.push(-1);
+                              acc.push(p);
+                              return acc;
+                            }, [])
+                            .map((p, i) =>
+                              p === -1 ? (
+                                <span key={`ellipsis-${i}`} className="px-1 text-slate-400">…</span>
+                              ) : (
+                                <button
+                                  key={p}
+                                  onClick={() => setCurrentPage(p)}
+                                  className={`h-8 w-8 rounded-xl text-xs font-bold cursor-pointer ${
+                                    p === currentPage ? 'bg-indigo-600 text-white' : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  {p}
+                                </button>
+                              )
+                            )}
+                          <button
+                            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                            disabled={currentPage === totalPages}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                          >
+                            Siguiente
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 ) : (
-                  <div className="rounded-3xl border border-white/80 bg-white/70 backdrop-blur-xl p-12 text-center shadow-xl shadow-slate-200/40">
+                  <div id="empty-portal-catalog" className="rounded-3xl border border-white/80 bg-white/70 backdrop-blur-xl p-12 text-center shadow-xl shadow-slate-200/40">
                     <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-500 border border-indigo-100">
                       <FolderSearch className="h-7 w-7" />
                     </div>
@@ -571,7 +682,7 @@ export default function App() {
           </div>
         </div>
       )}
-      {importPreview && <div className="fixed inset-0 z-[81] flex items-center justify-center bg-slate-950/60 p-4"><div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl"><h2 className="text-lg font-extrabold">Vista previa de importación</h2><p className="mt-1 text-sm text-slate-500">Se importarán {importPreview.length} portales. Las contraseñas no se muestran.</p><div className="mt-4 max-h-52 overflow-auto rounded-xl border"><table className="w-full text-left text-xs"><thead className="bg-slate-50"><tr><th className="p-2">Cuenta</th><th>URL administrativa</th><th>Usuario</th></tr></thead><tbody>{importPreview.slice(0,20).map((row,i)=><tr key={i} className="border-t"><td className="p-2">{row.name}</td><td>{row.url}</td><td>{row.username}</td></tr>)}</tbody></table></div><div className="mt-5 flex justify-end gap-3"><button onClick={()=>setImportPreview(null)} className="rounded-xl border px-4 py-2 text-sm font-bold">Cancelar</button><button onClick={async()=>{try{const result=await api('/api/portals/import',{method:'POST',body:JSON.stringify({rows:importPreview})});setImportPreview(null);addToast('success','Importación completada',`${result.imported} portales importados.`);fetchPortals();fetchActivity()}catch(error){addToast('warning','No se pudo importar Excel',error instanceof Error?error.message:undefined)}}} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-bold text-white">Importar {importPreview.length} portales</button></div></div></div>}
+      {importPreview && <div className="fixed inset-0 z-[81] flex items-center justify-center bg-slate-950/60 p-4"><div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl"><h2 className="text-lg font-extrabold">Vista previa de importación</h2><p className="mt-1 text-sm text-slate-500">Se importarán {importPreview.length} portales. Las contraseñas no se muestran.</p><div className="mt-4 max-h-52 overflow-auto rounded-xl border"><table className="w-full text-left text-xs"><thead className="bg-slate-50"><tr><th className="p-2">Cuenta</th><th>Tecnología</th><th>URL administrativa</th><th>Usuario</th></tr></thead><tbody>{importPreview.slice(0,20).map((row,i)=><tr key={i} className="border-t"><td className="p-2">{row.name}</td><td>{row.category}</td><td>{row.url}</td><td>{row.username}</td></tr>)}</tbody></table></div><div className="mt-5 flex justify-end gap-3"><button onClick={()=>setImportPreview(null)} className="rounded-xl border px-4 py-2 text-sm font-bold">Cancelar</button><button onClick={async()=>{try{const result=await api('/api/portals/import',{method:'POST',body:JSON.stringify({rows:importPreview})});setImportPreview(null);addToast('success','Importación completada',`${result.imported} portales importados.`);fetchPortals();fetchActivity()}catch(error){addToast('warning','No se pudo importar Excel',error instanceof Error?error.message:undefined)}}} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-bold text-white">Importar {importPreview.length} portales</button></div></div></div>}
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>

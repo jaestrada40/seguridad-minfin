@@ -1,4 +1,4 @@
-export type PortalCategory = 'WordPress' | 'Aplicación';
+export type PortalCategory = 'WordPress' | 'Joomla' | 'Aplicación';
 export type PortalStatus = 'Activo' | 'Inactivo';
 
 export interface Portal {

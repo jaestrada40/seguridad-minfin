@@ -50,6 +50,7 @@ MAX_TRACKED_IPS = 10_000
 DEFAULT_PORTALS_LIMIT = 200
 MAX_PORTALS_LIMIT = 500
 URL_RE = re.compile(r"^https?://\S+$")
+PORTAL_CATEGORIES = ("WordPress", "Joomla", "Aplicación")
 CSRF_HEADER = "X-Requested-With"
 CSRF_HEADER_VALUE = "SecureVaultFrontend"
 
@@ -693,9 +694,11 @@ def api_import_portals(conn, handler):
     for data in rows:
         if not isinstance(data, dict): raise ApiError(422, "Fila inválida")
         name = require_str(data, "name", 1, 120); url = require_str(data, "url", 1, 500); username = require_str(data, "username", 1, 120)
+        category = require_str(data, "category", 1, 40)
+        if category not in PORTAL_CATEGORIES: raise ApiError(422, "Tecnología inválida: " + category)
         if not URL_RE.match(url): raise ApiError(422, "URL inválida")
         password = data.get("password")
-        cur = conn.execute("INSERT INTO portals (name, category, url, username, has_vault_password) VALUES (?,?,?,?,?)", (name, "Aplicación", url, username, 1 if password else 0))
+        cur = conn.execute("INSERT INTO portals (name, category, url, username, has_vault_password) VALUES (?,?,?,?,?)", (name, category, url, username, 1 if password else 0))
         if password:
             if not isinstance(password, str): raise ApiError(422, "Contraseña inválida")
             vault_client.put_portal_password(cur.lastrowid, password)

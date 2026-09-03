@@ -26,7 +26,7 @@ export function Toolbar({
   onResetFilters,
   isFiltered,
 }: ToolbarProps) {
-  const categoryOptions: FilterCategory[] = ['Todos', 'WordPress', 'Aplicación'];
+  const categoryOptions: FilterCategory[] = ['Todos', 'WordPress', 'Joomla', 'Aplicación'];
   const statusOptions: FilterStatus[] = ['Todos', 'Activo', 'Inactivo'];
 
   return (

@@ -1,13 +1,14 @@
-import { Eye, CheckCircle2, Globe, AppWindow } from 'lucide-react';
+import { Eye, CheckCircle2, Globe, AppWindow, Layers } from 'lucide-react';
 
 interface MetricsPanelProps {
   totalVisible: number;
   wordPressCount: number;
+  joomlaCount: number;
   appsCount: number;
   activeCount: number;
 }
 
-export function MetricsPanel({ totalVisible, wordPressCount, appsCount, activeCount }: MetricsPanelProps) {
+export function MetricsPanel({ totalVisible, wordPressCount, joomlaCount, appsCount, activeCount }: MetricsPanelProps) {
   const metrics = [
     {
       id: 'metric-visible',
@@ -26,6 +27,15 @@ export function MetricsPanel({ totalVisible, wordPressCount, appsCount, activeCo
       icon: Globe,
       barColor: 'bg-blue-400',
       iconBg: 'bg-blue-50 text-blue-600 border-blue-100',
+    },
+    {
+      id: 'metric-joomla',
+      label: 'Portales Joomla',
+      value: joomlaCount,
+      description: 'CMS institucionales',
+      icon: Layers,
+      barColor: 'bg-amber-400',
+      iconBg: 'bg-amber-50 text-amber-600 border-amber-100',
     },
     {
       id: 'metric-apps',
@@ -48,7 +58,7 @@ export function MetricsPanel({ totalVisible, wordPressCount, appsCount, activeCo
   ];
 
   return (
-    <section id="metrics-panel" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+    <section id="metrics-panel" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5">
       {metrics.map((item) => {
         const Icon = item.icon;
         return (

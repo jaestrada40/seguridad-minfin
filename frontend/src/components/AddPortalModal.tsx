@@ -126,6 +126,7 @@ export function AddPortalModal({ isOpen, onClose, onSave, editingPortal }: AddPo
                 className="w-full rounded-xl border border-slate-200/80 bg-white/80 px-3.5 py-2.5 text-sm text-slate-900 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all cursor-pointer font-medium"
               >
                 <option value="WordPress">WordPress</option>
+                <option value="Joomla">Joomla</option>
                 <option value="Aplicación">Aplicación</option>
               </select>
             </div>

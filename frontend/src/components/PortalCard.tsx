@@ -1,6 +1,7 @@
 import { useState, type MouseEvent } from 'react';
-import { ExternalLink, Copy, Check, Lock, User, Globe, AppWindow, Info, Trash2, ToggleLeft, ToggleRight, Eye, Pencil } from 'lucide-react';
+import { ExternalLink, Copy, Check, Lock, User, Info, Trash2, ToggleLeft, ToggleRight, Eye, Pencil } from 'lucide-react';
 import { Portal, UserRole } from '../types';
+import { getCategoryStyle } from '../utils/categoryStyle';
 
 interface PortalCardProps {
   portal: Portal;
@@ -57,7 +58,8 @@ export function PortalCard({
     setTimeout(() => setCopiedPassword(false), 2000);
   };
 
-  const isWordpress = portal.category === 'WordPress';
+  const categoryStyle = getCategoryStyle(portal.category);
+  const CategoryIcon = categoryStyle.icon;
   const isActive = portal.status === 'Activo';
 
   return (
@@ -69,11 +71,9 @@ export function PortalCard({
         <div className="flex items-center justify-between mb-3 gap-2">
           <span
             id={`badge-cat-${portal.id}`}
-            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider border ${
-              isWordpress ? 'bg-blue-100/80 text-blue-700 border-blue-200/60' : 'bg-purple-100/80 text-purple-700 border-purple-200/60'
-            }`}
+            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider border ${categoryStyle.badge}`}
           >
-            {isWordpress ? <Globe className="h-3 w-3 text-blue-600" /> : <AppWindow className="h-3 w-3 text-purple-600" />}
+            <CategoryIcon className={`h-3 w-3 ${categoryStyle.iconColor}`} />
             {portal.category}
           </span>
 
