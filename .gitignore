@@ -14,3 +14,7 @@ caddy_config/
 # Documento interno de explicación de seguridad — nunca a git
 SEGURIDAD-EXPLICACION.md
 
+# Scripts de build con credenciales de registry en texto plano — quedan solo
+# en cada máquina, igual que en rededes-minfin.
+*.bat
+

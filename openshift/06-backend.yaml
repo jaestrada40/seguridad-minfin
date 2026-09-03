@@ -8,7 +8,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: backend
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: backend}
 spec:
   selector:
@@ -20,7 +20,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: backend}
 spec:
   replicas: 1
@@ -32,9 +32,12 @@ spec:
     metadata:
       labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: backend}
     spec:
+      imagePullSecrets:
+        - name: srv-osnexus01.minfin.gob.gt
       initContainers:
         - name: wait-vault-token
-          image: REGISTRY/securevault-backend:latest
+          image: srv-osnexus01.minfin.gob.gt:8006/securevault-backend:latest
+          imagePullPolicy: Always
           command:
             - python
             - -c
@@ -52,7 +55,8 @@ spec:
             - {name: vault-keys, mountPath: /keys, readOnly: true}
       containers:
         - name: backend
-          image: REGISTRY/securevault-backend:latest
+          image: srv-osnexus01.minfin.gob.gt:8006/securevault-backend:latest
+          imagePullPolicy: Always
           command: ["python", "-m", "app.main"]
           ports:
             - {name: http, containerPort: 8000}

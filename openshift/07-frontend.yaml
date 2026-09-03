@@ -1,12 +1,12 @@
 # 07 — Frontend (bundle estático servido por Caddy en :8080)
 # Reemplazá REGISTRY. La imagen se construye con el target `prod` del
-# frontend/Dockerfile (el default): `docker build -t REGISTRY/securevault-frontend ./frontend`
+# frontend/Dockerfile (el default): `docker build -t srv-osnexus01.minfin.gob.gt:8006/securevault-frontend ./frontend`
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: frontend
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: frontend}
 spec:
   selector:
@@ -18,10 +18,10 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: frontend
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: frontend}
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: frontend
@@ -29,9 +29,12 @@ spec:
     metadata:
       labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: frontend}
     spec:
+      imagePullSecrets:
+        - name: srv-osnexus01.minfin.gob.gt
       containers:
         - name: frontend
-          image: REGISTRY/securevault-frontend:latest
+          image: srv-osnexus01.minfin.gob.gt:8006/securevault-frontend:latest
+          imagePullPolicy: Always
           ports:
             - {name: http, containerPort: 8080}
           env:

@@ -51,9 +51,11 @@ grep -rnE 'REGISTRY|APP_HOST|CAMBIAR-ESTA-RUTA|REEMPLAZAR' openshift/
 ## 3. Orden de aplicación
 
 ```bash
-oc new-project securevault           # o: oc project securevault (si ya existe)
+oc new-project securevault            # o: oc project securevault (si ya existe)
+# Obligatorio antes del 00: un usuario normal no puede crear el Namespace vía
+# API cruda (Forbidden), pero sí Role/RoleBinding dentro de un proyecto propio.
 
-# 00 — namespace + ServiceAccount/Role para que el bootstrap escriba el Secret de llaves
+# 00 — ServiceAccount/Role para que el bootstrap escriba el Secret de llaves
 oc apply -f openshift/00-namespace-rbac.yaml
 
 # 01 — ConfigMaps (config, Caddyfile del proxy, vault.hcl, script de bootstrap)

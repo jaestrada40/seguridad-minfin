@@ -1,24 +1,20 @@
-# 00 — Namespace + identidad del Job de bootstrap de Vault
+# 00 — Identidad del Job de bootstrap de Vault
 #
 # El Job 05 escribe las llaves de Vault (unseal_key, root_token, backend_token)
 # en el Secret `securevault-vault-keys`. Para eso necesita una ServiceAccount
 # con permiso de get/create/patch sobre secrets EN ESTE namespace únicamente.
 #
-# Si ya tenés un proyecto creado (`oc new-project ...`), podés borrar el bloque
-# Namespace y aplicar el resto con `oc apply -n <tu-namespace> -f ...`.
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: securevault
-  labels:
-    app.kubernetes.io/part-of: securevault
+# Requiere que el proyecto ya exista (creado con `oc new-project securevault`
+# o `oc project securevault` si ya está) — un usuario normal de OpenShift no
+# puede crear el objeto Namespace crudo vía API, pero sí Role/RoleBinding
+# dentro de un proyecto del que es admin (el que crea el proyecto con
+# `oc new-project` queda como admin automáticamente).
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: securevault-bootstrap
-  namespace: securevault
+  namespace: controlcenter
   labels:
     app.kubernetes.io/part-of: securevault
 ---
@@ -26,7 +22,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: securevault-vault-keys-writer
-  namespace: securevault
+  namespace: controlcenter
   labels:
     app.kubernetes.io/part-of: securevault
 rules:
@@ -40,13 +36,13 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: securevault-bootstrap-vault-keys
-  namespace: securevault
+  namespace: controlcenter
   labels:
     app.kubernetes.io/part-of: securevault
 subjects:
   - kind: ServiceAccount
     name: securevault-bootstrap
-    namespace: securevault
+    namespace: controlcenter
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role

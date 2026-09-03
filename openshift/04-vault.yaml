@@ -7,7 +7,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vault
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: vault}
 spec:
   selector:
@@ -21,7 +21,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: vault
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: vault}
 spec:
   serviceName: vault
@@ -33,9 +33,12 @@ spec:
     metadata:
       labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: vault}
     spec:
+      imagePullSecrets:
+        - name: srv-osnexus01.minfin.gob.gt
       containers:
         - name: vault
-          image: REGISTRY/vault:1.17
+          image: srv-osnexus01.minfin.gob.gt:8006/vault:1.17
+          imagePullPolicy: Always
           # Invocar `vault server` directo (no el docker-entrypoint.sh): el
           # entrypoint oficial produjo "address already in use" en el listener
           # en pruebas previas del proyecto.
@@ -64,7 +67,8 @@ spec:
         # llaves ya existe, lo desella. En el primer despliegue el Secret todavía
         # no existe -> este loop falla en silencio hasta que corre el Job 05.
         - name: unsealer
-          image: REGISTRY/securevault-backend:latest
+          image: srv-osnexus01.minfin.gob.gt:8006/securevault-backend:latest
+          imagePullPolicy: Always
           command:
             - python
             - -c

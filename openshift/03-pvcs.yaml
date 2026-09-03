@@ -11,7 +11,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: securevault-backend-data
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault}
 spec:
   accessModes: ["ReadWriteOnce"]
@@ -24,7 +24,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: securevault-vault-data
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault}
 spec:
   accessModes: ["ReadWriteOnce"]
@@ -37,7 +37,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: securevault-backups
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault}
 spec:
   accessModes: ["ReadWriteOnce"]

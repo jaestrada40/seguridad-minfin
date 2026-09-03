@@ -19,7 +19,7 @@ COPY . .
 CMD ["npm", "run", "dev"]
 
 # ---- prod (stage por defecto): estáticos servidos por Caddy en :8080 ----
-FROM caddy:2-alpine AS prod
+FROM caddy:2.7-alpine AS prod
 COPY docker/frontend-Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /app/dist /srv
 # Caddy escribe en XDG dirs; en OpenShift (UID aleatorio, GID 0) los dejamos en

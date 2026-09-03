@@ -12,7 +12,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: securevault-vault-bootstrap
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault}
 spec:
   backoffLimit: 6
@@ -24,9 +24,12 @@ spec:
     spec:
       serviceAccountName: securevault-bootstrap
       restartPolicy: Never
+      imagePullSecrets:
+        - name: srv-osnexus01.minfin.gob.gt
       containers:
         - name: bootstrap
-          image: REGISTRY/securevault-backend:latest
+          image: srv-osnexus01.minfin.gob.gt:8006/securevault-backend:latest
+          imagePullPolicy: Always
           command: ["python", "-u", "/scripts/bootstrap.py"]
           env:
             - {name: VAULT_ADDR, value: "http://vault:8200"}

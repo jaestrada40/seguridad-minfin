@@ -1,4 +1,6 @@
-# 09 — Route (entrada pública). Reemplazá APP_HOST por el hostname real.
+# 09 — Route (entrada pública). Sin spec.host: OpenShift genera uno solo
+# (<name>-<namespace>.<dominio-apps-del-cluster>) — usar ese en vez de fijar
+# uno propio si todavía no hay un hostname público asignado.
 #
 # TLS: `edge` = OpenShift termina TLS con el certificado del router (o el que
 # pongas en spec.tls). Si tu política exige certificado propio, agregá
@@ -6,15 +8,14 @@
 # poné TLS también en el proxy.
 #
 # El host raíz "/" responde 404 (nginx falso): eso es intencional. La app vive
-# en https://APP_HOST<APP_SECRET_PATH>/ .
+# en https://<host-del-route><APP_SECRET_PATH>/ .
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: securevault
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault}
 spec:
-  host: APP_HOST
   to:
     kind: Service
     name: proxy

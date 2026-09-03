@@ -9,18 +9,18 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: securevault-config
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault}
 data:
-  APP_SECRET_PATH: "/CAMBIAR-ESTA-RUTA"
-  CORS_ORIGIN: "https://APP_HOST"
+  APP_SECRET_PATH: "/sv-19c6a1cd"
+  CORS_ORIGIN: "https://securevault-controlcenter.apps.okd4.mfpweb.local"
   COOKIE_SECURE: "true"
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: securevault-proxy-caddyfile
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault}
 data:
   Caddyfile: |
@@ -84,7 +84,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: securevault-vault-config
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault}
 data:
   vault.hcl: |
@@ -103,7 +103,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: securevault-vault-bootstrap
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault}
 data:
   # Copia de vault/bootstrap/bootstrap.py — si cambia el original, regenerá con:

@@ -6,7 +6,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: securevault-backup
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault}
 spec:
   schedule: "0 3 * * *"
@@ -23,6 +23,8 @@ spec:
           labels: {app.kubernetes.io/part-of: securevault}
         spec:
           restartPolicy: Never
+          imagePullSecrets:
+            - name: srv-osnexus01.minfin.gob.gt
           # Co-localizar con el backend: los PVC son RWO y la mayoría de los CSI
           # permiten multi-mount sólo dentro del mismo nodo. Si usás RWX podés
           # borrar este bloque affinity.
@@ -34,7 +36,8 @@ spec:
                   topologyKey: kubernetes.io/hostname
           containers:
             - name: backup
-              image: REGISTRY/securevault-backend:latest
+              image: srv-osnexus01.minfin.gob.gt:8006/securevault-backend:latest
+              imagePullPolicy: Always
               command: ["python", "-u", "scripts/backup_daemon.py", "--once"]
               env:
                 - {name: DB_PATH, value: "/data/securevault.db"}

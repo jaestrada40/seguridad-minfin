@@ -6,7 +6,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: proxy
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: proxy}
 spec:
   selector:
@@ -18,10 +18,10 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: proxy
-  namespace: securevault
+  namespace: controlcenter
   labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: proxy}
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: proxy
@@ -32,9 +32,12 @@ spec:
         # fuerza rollout del proxy cuando cambia el Caddyfile:
         checksum/caddyfile: "REEMPLAZAR-O-IGNORAR"
     spec:
+      imagePullSecrets:
+        - name: srv-osnexus01.minfin.gob.gt
       containers:
         - name: caddy
-          image: REGISTRY/caddy:2-alpine
+          image: srv-osnexus01.minfin.gob.gt:8006/caddy:2.7-alpine
+          imagePullPolicy: Always
           ports:
             - {name: http, containerPort: 8080}
           env:
