@@ -91,7 +91,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             auth_method TEXT NOT NULL DEFAULT 'Local (Dev)',
             last_login REAL,
             totp_secret TEXT,
-            mfa_enabled INTEGER NOT NULL DEFAULT 0
+            mfa_enabled INTEGER NOT NULL DEFAULT 0,
+            last_totp_step INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS portals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +148,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
     if "mfa_enabled" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0")
+    if "last_totp_step" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN last_totp_step INTEGER NOT NULL DEFAULT 0")
     session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
     if "reauth_until" not in session_columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN reauth_until REAL")
@@ -237,11 +240,33 @@ def totp_code_at(secret: str, counter: int) -> str:
     return str(truncated % (10 ** TOTP_DIGITS)).zfill(TOTP_DIGITS)
 
 
-def verify_totp(secret: str, code: str, window: int = 1) -> bool:
+def verify_totp(secret: str, code: str, window: int = 1) -> int | None:
+    """Devuelve el contador (paso de 30 s) con el que el código es válido, o
+    None si no lo es. El contador se usa para impedir reutilizar el mismo
+    código dentro de su ventana de validez (anti-replay, RFC 6238 §5.2)."""
     if not code or not code.isdigit() or len(code) != TOTP_DIGITS:
-        return False
+        return None
     counter = int(time.time()) // TOTP_STEP
-    return any(hmac.compare_digest(totp_code_at(secret, counter + delta), code) for delta in range(-window, window + 1))
+    for delta in range(-window, window + 1):
+        if hmac.compare_digest(totp_code_at(secret, counter + delta), code):
+            return counter + delta
+    return None
+
+
+def consume_totp(conn: sqlite3.Connection, user: sqlite3.Row, code: str) -> str:
+    """Valida un código TOTP y lo marca como usado. Un código sirve una sola
+    vez aunque siga dentro de su ventana de validez. Devuelve:
+      "ok"      — válido y recién consumido
+      "reused"  — era un código válido pero ya se había usado
+      "invalid" — no corresponde a ningún paso vigente
+    """
+    step = verify_totp(user["totp_secret"], code)
+    if step is None:
+        return "invalid"
+    if step <= (user["last_totp_step"] or 0):
+        return "reused"
+    conn.execute("UPDATE users SET last_totp_step = ? WHERE id = ?", (step, user["id"]))
+    return "ok"
 
 
 def otpauth_url(username: str, secret: str) -> str:
@@ -419,13 +444,16 @@ def api_mfa_confirm(conn, handler):
 
     user_id = verify_pending_mfa_token(pending_token)
     user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    if not user or not user["is_active"] or not user["totp_secret"] or not verify_totp(user["totp_secret"], code):
+    totp_result = consume_totp(conn, user, code) if (user and user["is_active"] and user["totp_secret"]) else "invalid"
+    if totp_result != "ok":
         attempts += 1
         with failed_logins_lock:
             if len(failed_logins) >= MAX_TRACKED_IPS:
                 failed_logins.clear()
             failed_logins[key] = (0, time.time() + 900) if attempts >= 5 else (attempts, 0)
         audit(conn, user["id"] if user else None, "Código MFA incorrecto", type="auth", ip_address=key)
+        if totp_result == "reused":
+            raise ApiError(401, "Ese código ya se usó. Espera a que tu app genere el siguiente.")
         raise ApiError(401, "Código incorrecto")
 
     with failed_logins_lock:
@@ -488,8 +516,11 @@ def api_mfa_reauth(conn, handler) -> dict:
     action = require_str(data, "action", 1, 20)
     if action not in ("reveal", "backup", "import", "restore"):
         raise ApiError(422, "Acción MFA inválida")
-    if not user["totp_secret"] or not verify_totp(user["totp_secret"], code):
+    totp_result = consume_totp(conn, user, code) if user["totp_secret"] else "invalid"
+    if totp_result != "ok":
         audit(conn, user["id"], "Reautenticación MFA fallida", type="auth", ip_address=handler.client_ip())
+        if totp_result == "reused":
+            raise ApiError(401, "Ese código ya se usó. Espera a que tu app genere el siguiente.")
         raise ApiError(401, "Código MFA incorrecto")
     conn.execute(
         "UPDATE sessions SET reauth_until = ?, reauth_action = ? WHERE id = ?",
@@ -511,7 +542,7 @@ def api_reset_mfa(conn, handler, user_id_str) -> dict:
     target = conn.execute("SELECT * FROM users WHERE id = ?", (target_id,)).fetchone()
     if not target:
         raise ApiError(404, "Usuario no encontrado")
-    conn.execute("UPDATE users SET totp_secret = NULL, mfa_enabled = 0 WHERE id = ?", (target_id,))
+    conn.execute("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, last_totp_step = 0 WHERE id = ?", (target_id,))
     conn.execute("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", (time.time(), target_id))
     conn.commit()
     audit(conn, admin["id"], f"Reset de MFA ({target['username']})", type="update", ip_address=handler.client_ip())

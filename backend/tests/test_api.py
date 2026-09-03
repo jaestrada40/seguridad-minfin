@@ -102,7 +102,15 @@ class ApiSmokeTest(unittest.TestCase):
         conn.close()
         return resp.status, parsed
 
+    def _reset_totp_replay_guard(self):
+        # Los tests corren varios login/reauth dentro del mismo tramo de 30 s;
+        # sin esto el anti-replay (mismo código dos veces) haría fallar al 2º.
+        conn = app_main.get_db()
+        conn.execute("UPDATE users SET last_totp_step = 0")
+        conn.commit()
+
     def login(self):
+        self._reset_totp_replay_guard()
         status, payload, _ = self.request(
             "POST", "/api/auth/login", {"username": "admin.test", "password": "test-password-1234"}
         )
@@ -122,6 +130,7 @@ class ApiSmokeTest(unittest.TestCase):
         return cookie
 
     def reauth(self, cookie, action="reveal"):
+        self._reset_totp_replay_guard()
         code = app_main.totp_code_at(type(self)._known_secret, int(time.time()) // app_main.TOTP_STEP)
         status, payload, _ = self.request("POST", "/api/auth/mfa/reauth", {"code": code, "action": action}, cookie=cookie)
         self.assertEqual(status, 200, payload)
@@ -266,6 +275,17 @@ class ApiSmokeTest(unittest.TestCase):
             "POST", "/api/auth/mfa/confirm", {"pendingToken": payload["pendingToken"], "code": "000000"}
         )
         self.assertEqual(status, 401, err)
+
+    def test_mfa_code_cannot_be_reused(self):
+        cookie = self.login()
+        self._reset_totp_replay_guard()
+        code = app_main.totp_code_at(type(self)._known_secret, int(time.time()) // app_main.TOTP_STEP)
+        s1, r1, _ = self.request("POST", "/api/auth/mfa/reauth", {"code": code, "action": "reveal"}, cookie=cookie)
+        self.assertEqual(s1, 200, r1)
+        # el mismo código, aún dentro de su ventana de validez, ya no sirve
+        s2, r2, _ = self.request("POST", "/api/auth/mfa/reauth", {"code": code, "action": "reveal"}, cookie=cookie)
+        self.assertEqual(s2, 401, r2)
+        self.assertIn("ya se us", r2["detail"])
 
     def test_settings_logo_roundtrip(self):
         cookie = self.login()
