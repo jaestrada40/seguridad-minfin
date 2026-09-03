@@ -1,0 +1,50 @@
+# 07 — Frontend (bundle estático servido por Caddy en :8080)
+# Reemplazá REGISTRY. La imagen se construye con el target `prod` del
+# frontend/Dockerfile (el default): `docker build -t REGISTRY/securevault-frontend ./frontend`
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: frontend}
+spec:
+  selector:
+    app.kubernetes.io/name: frontend
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: frontend}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  template:
+    metadata:
+      labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: frontend}
+    spec:
+      containers:
+        - name: frontend
+          image: REGISTRY/securevault-frontend:latest
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - {name: HOME, value: "/tmp"}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          readinessProbe:
+            httpGet: {path: /, port: 8080}
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 96Mi}
+      volumes:
+        - name: tmp
+          emptyDir: {}

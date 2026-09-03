@@ -1,0 +1,91 @@
+# 06 — Backend (API, 1 réplica)
+#
+# Aplicá esto DESPUÉS de que el Job 05 haya terminado (el Secret
+# securevault-vault-keys tiene que existir con backend_token).
+# Reemplazá REGISTRY.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: backend}
+spec:
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - {name: http, port: 8000, targetPort: 8000}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: securevault
+  labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: backend}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # SQLite en un PVC RWO: nunca dos pods a la vez
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  template:
+    metadata:
+      labels: {app.kubernetes.io/part-of: securevault, app.kubernetes.io/name: backend}
+    spec:
+      initContainers:
+        - name: wait-vault-token
+          image: REGISTRY/securevault-backend:latest
+          command:
+            - python
+            - -c
+            - |
+              import json, sys, time
+              for _ in range(60):
+                  try:
+                      if json.load(open("/keys/vault-keys.json")).get("backend_token"):
+                          print("token de Vault disponible", flush=True); sys.exit(0)
+                  except Exception:
+                      pass
+                  print("esperando el token de Vault...", flush=True); time.sleep(5)
+              print("sin token todavía; el backend arranca igual (Vault se usa on-demand)", flush=True)
+          volumeMounts:
+            - {name: vault-keys, mountPath: /keys, readOnly: true}
+      containers:
+        - name: backend
+          image: REGISTRY/securevault-backend:latest
+          command: ["python", "-m", "app.main"]
+          ports:
+            - {name: http, containerPort: 8000}
+          envFrom:
+            - secretRef: {name: securevault-app}
+            - configMapRef: {name: securevault-config}
+          env:
+            - {name: VAULT_ADDR, value: "http://vault:8200"}
+            - {name: VAULT_KEYS_PATH, value: "/keys/vault-keys.json"}
+            - {name: DB_PATH, value: "/app/data/securevault.db"}
+            - {name: BACKUP_DIR, value: "/backups"}
+          volumeMounts:
+            - {name: data, mountPath: /app/data}
+            - {name: vault-keys, mountPath: /keys, readOnly: true}
+            - {name: backups, mountPath: /backups, readOnly: true}   # el backend solo lee respaldos; el CronJob los escribe
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: securevault-backend-data}
+        - name: backups
+          persistentVolumeClaim: {claimName: securevault-backups}
+        - name: vault-keys
+          secret:
+            secretName: securevault-vault-keys
+            optional: true
+            items: [{key: vault-keys.json, path: vault-keys.json}]

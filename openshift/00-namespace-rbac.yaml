@@ -1,0 +1,53 @@
+# 00 — Namespace + identidad del Job de bootstrap de Vault
+#
+# El Job 05 escribe las llaves de Vault (unseal_key, root_token, backend_token)
+# en el Secret `securevault-vault-keys`. Para eso necesita una ServiceAccount
+# con permiso de get/create/patch sobre secrets EN ESTE namespace únicamente.
+#
+# Si ya tenés un proyecto creado (`oc new-project ...`), podés borrar el bloque
+# Namespace y aplicar el resto con `oc apply -n <tu-namespace> -f ...`.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: securevault
+  labels:
+    app.kubernetes.io/part-of: securevault
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: securevault-bootstrap
+  namespace: securevault
+  labels:
+    app.kubernetes.io/part-of: securevault
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: securevault-vault-keys-writer
+  namespace: securevault
+  labels:
+    app.kubernetes.io/part-of: securevault
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "patch", "update"]
+    # Sin `resourceNames` porque el Secret puede no existir la primera vez y
+    # `create` no admite filtrar por nombre; el Role está acotado al namespace.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: securevault-bootstrap-vault-keys
+  namespace: securevault
+  labels:
+    app.kubernetes.io/part-of: securevault
+subjects:
+  - kind: ServiceAccount
+    name: securevault-bootstrap
+    namespace: securevault
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: securevault-vault-keys-writer

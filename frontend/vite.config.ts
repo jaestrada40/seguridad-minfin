@@ -7,12 +7,18 @@ import {defineConfig} from 'vite';
 // solo quien conoce esta ruta puede llegar al login). Se controla con la
 // variable de entorno APP_SECRET_PATH (en .env, no se sube a git). Si no se
 // define, la app se sirve en `/` como siempre.
+//
+// En `build` (producción) usamos `base: './'` — rutas de assets relativas —
+// para que el bundle sirva bajo CUALQUIER prefijo sin reconstruir: el proxy
+// (Caddy) decide la ruta secreta en runtime y hace strip del prefijo. En
+// `serve` (dev) sí horneamos APP_SECRET_PATH porque el dev server de Vite lo
+// necesita para resolver `/@vite`, HMR, etc.
 const rawBase = process.env.APP_SECRET_PATH || '/';
-const base = rawBase === '/' ? '/' : `/${rawBase.replace(/^\/+|\/+$/g, '')}/`;
+const devBase = rawBase === '/' ? '/' : `/${rawBase.replace(/^\/+|\/+$/g, '')}/`;
 
-export default defineConfig(() => {
+export default defineConfig(({command}) => {
   return {
-    base,
+    base: command === 'build' ? './' : devBase,
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
