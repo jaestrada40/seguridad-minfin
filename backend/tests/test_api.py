@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["ADMIN_USERNAME"] = "admin.test"
 os.environ["ADMIN_PASSWORD"] = "test-password-1234"
 os.environ["SESSION_SECRET"] = "test-session-secret-which-is-at-least-32-bytes"
+os.environ["BACKUP_ENCRYPTION_KEY"] = "test-backup-encryption-key-at-least-32-bytes"
 
 _db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _db_file.close()
@@ -86,6 +87,20 @@ class ApiSmokeTest(unittest.TestCase):
         set_cookie = resp.getheader("Set-Cookie")
         conn.close()
         return resp.status, parsed, set_cookie
+
+    def request_raw(self, method, path, raw_body, cookie=None, csrf=True):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        headers = {"Content-Type": "application/octet-stream"}
+        if csrf:
+            headers[app_main.CSRF_HEADER] = app_main.CSRF_HEADER_VALUE
+        if cookie:
+            headers["Cookie"] = cookie
+        conn.request(method, path, body=raw_body, headers=headers)
+        resp = conn.getresponse()
+        data = resp.read()
+        parsed = json.loads(data) if data else None
+        conn.close()
+        return resp.status, parsed
 
     def login(self):
         status, payload, _ = self.request(
@@ -304,6 +319,80 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertEqual(status, 401)
         status, _, _ = self.request("GET", "/api/auth/me", cookie=cookie)
         self.assertEqual(status, 401)
+
+    def _make_encrypted_backup(self):
+        """Snapshot cifrado del estado actual de la base, como lo haría el daemon."""
+        import tempfile as _tf
+
+        from app import backup_crypto
+        snap = _tf.NamedTemporaryFile(suffix=".db", delete=False)
+        snap.close()
+        src = app_main.sqlite3.connect(f"file:{_db_file.name}?mode=ro", uri=True)
+        dst = app_main.sqlite3.connect(snap.name)
+        with dst:
+            src.backup(dst)
+        src.close()
+        dst.close()
+        enc = _tf.NamedTemporaryFile(suffix=".enc", delete=False)
+        enc.close()
+        backup_crypto.encrypt_file(snap.name, enc.name, os.environ["BACKUP_ENCRYPTION_KEY"])
+        with open(enc.name, "rb") as f:
+            data = f.read()
+        os.unlink(snap.name)
+        os.unlink(enc.name)
+        return data
+
+    def test_restore_backup_roundtrip(self):
+        cookie = self.login()
+        status, keep, _ = self.request(
+            "POST", "/api/portals",
+            {"name": "Antes del respaldo", "category": "Aplicación", "url": "https://demo.local/keep", "username": "u"},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 201, keep)
+
+        backup_bytes = self._make_encrypted_backup()
+
+        status, gone, _ = self.request(
+            "POST", "/api/portals",
+            {"name": "Despues del respaldo", "category": "Aplicación", "url": "https://demo.local/gone", "username": "u"},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 201, gone)
+
+        # sin reauth MFA → 403
+        status, denied = self.request_raw("POST", "/api/backups/restore", backup_bytes, cookie=cookie)
+        self.assertEqual(status, 403, denied)
+
+        self.reauth(cookie, action="restore")
+        status, restored = self.request_raw("POST", "/api/backups/restore", backup_bytes, cookie=cookie)
+        self.assertEqual(status, 200, restored)
+        self.assertIn("snapshotBefore", restored)
+
+        status, portals, _ = self.request("GET", "/api/portals", cookie=cookie)
+        self.assertEqual(status, 200)
+        names = {p["name"] for p in portals}
+        self.assertIn("Antes del respaldo", names)
+        self.assertNotIn("Despues del respaldo", names)
+
+    def test_restore_backup_rejects_garbage(self):
+        cookie = self.login()
+        self.reauth(cookie, action="restore")
+        status, payload = self.request_raw("POST", "/api/backups/restore", b"no soy un backup" * 10, cookie=cookie)
+        self.assertEqual(status, 422, payload)
+
+    def test_restore_backup_forbidden_for_non_admin(self):
+        cookie = self.login()
+        conn = app_main.get_db()
+        conn.execute(
+            "INSERT INTO users (username, display_name, password_hash, role, is_active, auth_method) VALUES (?,?,?,?,?,?)",
+            ("viewer.restore", "Viewer", app_main.password_hash("viewer-password-1234"), "Visor", 1, "Local"),
+        )
+        conn.commit()
+        viewer = app_main.make_token(conn.execute("SELECT id FROM users WHERE username = ?", ("viewer.restore",)).fetchone()["id"])
+        viewer_cookie = f"{app_main.COOKIE}={viewer}"
+        status, payload = self.request_raw("POST", "/api/backups/restore", b"anything", cookie=viewer_cookie)
+        self.assertEqual(status, 403, payload)
 
     def test_viewer_cannot_reveal_password(self):
         cookie = self.login()

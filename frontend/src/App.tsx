@@ -20,7 +20,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
-  const [mfaRequest, setMfaRequest] = useState<{ action: 'reveal' | 'backup' | 'import'; resolve: (approved: boolean) => void } | null>(null);
+  const [mfaRequest, setMfaRequest] = useState<{ action: 'reveal' | 'backup' | 'import' | 'restore'; resolve: (approved: boolean) => void } | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importPreview, setImportPreview] = useState<any[] | null>(null);
 
@@ -296,7 +296,25 @@ export default function App() {
     } catch (error) { addToast('warning', 'No se pudo descargar el respaldo', error instanceof Error ? error.message : undefined); }
   };
 
-  const requestMfa = (action: 'reveal' | 'backup' | 'import') => new Promise<boolean>((resolve) => setMfaRequest({ action, resolve }));
+  const requestMfa = (action: 'reveal' | 'backup' | 'import' | 'restore') => new Promise<boolean>((resolve) => setMfaRequest({ action, resolve }));
+
+  const handleRestoreBackup = async (file: File) => {
+    if (!await requestMfa('restore')) return;
+    try {
+      const response = await fetch('/api/backups/restore', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/octet-stream', 'X-Requested-With': 'SecureVaultFrontend' },
+        body: await file.arrayBuffer(),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || 'No se pudo restaurar el respaldo');
+      const result = await response.json();
+      addToast('success', 'Respaldo restaurado', `La base fue reemplazada. Copia previa guardada como ${result.snapshotBefore}.`);
+      fetchPortals(); fetchActivity(); fetchSystemInfo();
+    } catch (error) {
+      addToast('warning', 'No se pudo restaurar el respaldo', error instanceof Error ? error.message : undefined);
+    }
+  };
 
   const handleImportExcel = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -497,7 +515,7 @@ export default function App() {
 
           {currentTab === 'actividad' && isAdmin && <ActivityView logs={activityLogs} />}
           {currentTab === 'usuarios' && isAdmin && <UsersView users={users} onResetMfa={handleResetMfa} onChangeOwnPassword={() => setIsChangePasswordOpen(true)} />}
-          {currentTab === 'configuracion' && isAdmin && <SettingsView onUpdateLogo={handleUpdateLogo} onDownloadBackup={handleDownloadBackup} logoRefreshKey={logoRefreshKey} onShowToast={addToast} systemInfo={systemInfo} />}
+          {currentTab === 'configuracion' && isAdmin && <SettingsView onUpdateLogo={handleUpdateLogo} onDownloadBackup={handleDownloadBackup} onRestoreBackup={handleRestoreBackup} logoRefreshKey={logoRefreshKey} onShowToast={addToast} systemInfo={systemInfo} />}
         </main>
       </div>
 

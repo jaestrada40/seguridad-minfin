@@ -49,10 +49,12 @@ El servicio `backup` corre en segundo plano y genera un respaldo cifrado de la b
 
 - Cifrado: Encrypt-then-MAC con HMAC-SHA256, con `BACKUP_ENCRYPTION_KEY` — una clave completamente separada de las demás (para que comprometer la app no implique comprometer los backups).
 - Retención: los últimos 14 backups (`BACKUP_RETENTION_COUNT`).
-- Restaurar:
-  ```powershell
-  docker compose run --rm backend python scripts/restore_backup.py /backups/securevault-XXXXXXXX-XXXXXX.enc /app/data/securevault.db
-  ```
+- Restaurar (dos formas, ambas piden la `BACKUP_ENCRYPTION_KEY` correcta):
+  - **Desde la UI** (recomendado): Configuración → *Respaldo cifrado* → *Restaurar desde archivo*. Solo Administrador, pide MFA, guarda una copia de la base actual (`securevault-pre-restore-*.db` en el volumen de datos) antes de sobrescribir y queda auditado. Reemplaza la base viva sin reiniciar el backend (API de backup online de SQLite).
+  - **Por línea de comandos:**
+    ```powershell
+    docker compose run --rm backend python scripts/restore_backup.py /backups/securevault-XXXXXXXX-XXXXXX.enc /app/data/securevault.db
+    ```
 - **Pendiente por tu parte:** esto solo cubre la copia local. Para cumplir 3-2-1 de verdad falta subir `./backups/` a un destino externo (NAS, S3, Backblaze, etc.) — no lo automaticé porque requiere tus credenciales de esa nube. Se puede conectar con `rclone`/`aws s3 sync` apuntando a esa carpeta.
 - **Importante:** un backup nunca restaurado no debe asumirse recuperable — probé el ciclo cifrar/descifrar con un archivo de prueba antes de darlo por bueno, pero te recomiendo hacer tú también una restauración de práctica.
 

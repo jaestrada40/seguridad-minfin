@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Activity, ShieldCheck, Clock, Lock, HardDrive, ImageUp, Trash2, RotateCcw, KeyRound } from 'lucide-react';
+import { Activity, ShieldCheck, Clock, Lock, HardDrive, ImageUp, Trash2, RotateCcw, KeyRound, Upload, AlertTriangle } from 'lucide-react';
 import { ActivityLog, UserProfile, SystemInfo } from '../types';
 import { Logo } from './Logo';
 
@@ -191,6 +191,7 @@ export function UsersView({ users, onResetMfa, onChangeOwnPassword }: UsersViewP
 interface SettingsViewProps {
   onUpdateLogo: (dataUrl: string | null) => void;
   onDownloadBackup: () => void;
+  onRestoreBackup: (file: File) => void;
   logoRefreshKey: number;
   onShowToast: (type: 'success' | 'info' | 'warning', title: string, message?: string) => void;
   systemInfo: SystemInfo | null;
@@ -199,8 +200,12 @@ interface SettingsViewProps {
 const MAX_LOGO_BYTES = 500 * 1024;
 const ALLOWED_LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'];
 
-export function SettingsView({ onUpdateLogo, onDownloadBackup, logoRefreshKey, onShowToast, systemInfo }: SettingsViewProps) {
+export function SettingsView({ onUpdateLogo, onDownloadBackup, onRestoreBackup, logoRefreshKey, onShowToast, systemInfo }: SettingsViewProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const restoreInputRef = useRef<HTMLInputElement>(null);
+  const [pendingRestore, setPendingRestore] = useState<File | null>(null);
+  const restoreAvailable = systemInfo?.backups?.restoreAvailable ?? true;
+  const restoreMaxMb = systemInfo?.backups?.maxUploadMb ?? 64;
 
   const handleLogoFile = (file: File) => {
     if (!ALLOWED_LOGO_TYPES.includes(file.type)) {
@@ -275,6 +280,63 @@ export function SettingsView({ onUpdateLogo, onDownloadBackup, logoRefreshKey, o
             <button type="button" onClick={onDownloadBackup} className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-700 transition-all cursor-pointer">
               <HardDrive className="h-3.5 w-3.5" /><span>Descargar último respaldo</span>
             </button>
+
+            <div className="mt-5 border-t border-slate-200/70 pt-4">
+              <h4 className="font-bold text-slate-900 flex items-center gap-2"><Upload className="h-3.5 w-3.5 text-amber-600" /> Restaurar desde archivo</h4>
+              <p className="text-slate-600 mt-1 font-normal">
+                Sube un archivo <code className="font-mono">.enc</code> para reemplazar la base actual (usuarios, portales, auditoría). Las contraseñas en Vault no se tocan. Se pedirá MFA y se guardará una copia de la base actual antes de sobrescribir.
+              </p>
+              <input
+                ref={restoreInputRef}
+                type="file"
+                accept=".enc"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!file) return;
+                  if (file.size > restoreMaxMb * 1024 * 1024) {
+                    onShowToast('warning', 'Archivo demasiado grande', `El respaldo no puede superar ${restoreMaxMb} MB.`);
+                    return;
+                  }
+                  setPendingRestore(file);
+                }}
+              />
+              {!pendingRestore ? (
+                <button
+                  type="button"
+                  disabled={!restoreAvailable}
+                  onClick={() => restoreInputRef.current?.click()}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                  title={restoreAvailable ? undefined : 'El backend no tiene BACKUP_ENCRYPTION_KEY configurada'}
+                >
+                  <Upload className="h-3.5 w-3.5" /><span>Elegir archivo .enc</span>
+                </button>
+              ) : (
+                <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3.5">
+                  <p className="flex items-start gap-2 font-semibold text-amber-900">
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                    <span>Vas a reemplazar toda la base con <span className="font-mono">{pendingRestore.name}</span> ({(pendingRestore.size / 1024).toFixed(0)} KB). Esta acción no se puede deshacer (queda una copia previa automática).</span>
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { const file = pendingRestore; setPendingRestore(null); onRestoreBackup(file); }}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-amber-700 transition-all cursor-pointer"
+                    >
+                      <Upload className="h-3.5 w-3.5" /><span>Restaurar ahora</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPendingRestore(null)}
+                      className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-slate-200/60 bg-white/60 backdrop-blur-xs p-5">

@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import sqlite3
+import tempfile
 import threading
 import time
 import traceback
@@ -21,9 +22,11 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import vault_client
+from . import backup_crypto, vault_client
 
 DB_PATH = os.getenv("DB_PATH", "/app/data/securevault.db")
+BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", "")
+MAX_BACKUP_UPLOAD_BYTES = 64 * 1024 * 1024
 def required_secret(name: str, minimum_length: int = 32) -> str:
     value = os.getenv(name, "")
     unsafe_markers = ("change-this", "cambiar_esta", "cambiar-esta", "reemplazar")
@@ -483,7 +486,7 @@ def api_mfa_reauth(conn, handler) -> dict:
     data = handler.read_json()
     code = require_str(data, "code", 6, 6)
     action = require_str(data, "action", 1, 20)
-    if action not in ("reveal", "backup", "import"):
+    if action not in ("reveal", "backup", "import", "restore"):
         raise ApiError(422, "Acción MFA inválida")
     if not user["totp_secret"] or not verify_totp(user["totp_secret"], code):
         audit(conn, user["id"], "Reautenticación MFA fallida", type="auth", ip_address=handler.client_ip())
@@ -575,6 +578,10 @@ def api_system_settings(conn, handler) -> dict:
             "initialized": vault["initialized"],
             "sealed": vault["sealed"],
             "version": vault["version"],
+        },
+        "backups": {
+            "restoreAvailable": bool(BACKUP_ENCRYPTION_KEY),
+            "maxUploadMb": MAX_BACKUP_UPLOAD_BYTES // (1024 * 1024),
         },
         "catalog": {
             "portalsTotal": portals["total"] or 0,
@@ -780,6 +787,75 @@ def api_download_backup(conn, handler, filename: str) -> Path:
     return path
 
 
+SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _assert_valid_sqlite(path: str) -> None:
+    with open(path, "rb") as f:
+        if f.read(16) != SQLITE_MAGIC:
+            raise ApiError(422, "El archivo restaurado no es una base de datos SQLite válida")
+    probe = sqlite3.connect(path)
+    try:
+        if probe.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise ApiError(422, "La base restaurada no pasó el chequeo de integridad")
+        tables = {row[0] for row in probe.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    except sqlite3.DatabaseError:
+        raise ApiError(422, "El archivo restaurado está dañado o no es una base SQLite legible")
+    finally:
+        probe.close()
+    missing = {"users", "portals", "audit_logs"} - tables
+    if missing:
+        raise ApiError(422, "El backup no parece de SecureVault (faltan tablas: %s)" % ", ".join(sorted(missing)))
+
+
+def api_restore_backup(conn, handler) -> dict:
+    user = current_user(conn, handler)
+    if user["role"] != "Administrador":
+        raise ApiError(403, "No tiene permisos para restaurar respaldos")
+    if not BACKUP_ENCRYPTION_KEY:
+        raise ApiError(503, "Restauración no disponible: falta BACKUP_ENCRYPTION_KEY en el backend")
+    consume_mfa_reauth(conn, handler, "restore")
+
+    payload = handler.read_body_bytes(MAX_BACKUP_UPLOAD_BYTES)
+    work_dir = os.path.dirname(DB_PATH)
+    fd_enc, enc_path = tempfile.mkstemp(suffix=".enc", dir=work_dir)
+    with os.fdopen(fd_enc, "wb") as f:
+        f.write(payload)
+    fd_db, restored_path = tempfile.mkstemp(suffix=".db", dir=work_dir)
+    os.close(fd_db)
+    os.remove(restored_path)  # decrypt_file lo vuelve a crear
+    snapshot_path = os.path.join(work_dir, time.strftime("securevault-pre-restore-%Y%m%d-%H%M%S.db"))
+
+    try:
+        try:
+            backup_crypto.decrypt_file(enc_path, restored_path, BACKUP_ENCRYPTION_KEY)
+        except ValueError as e:
+            raise ApiError(422, str(e))
+        _assert_valid_sqlite(restored_path)
+
+        snapshot = sqlite3.connect(snapshot_path)
+        try:
+            conn.backup(snapshot)   # copia previa de la base actual, por si hay que volver atrás
+        finally:
+            snapshot.close()
+
+        source = sqlite3.connect(restored_path)
+        try:
+            source.backup(conn)     # reemplaza la base viva in-place; otras conexiones ven el estado nuevo
+        finally:
+            source.close()
+        conn.commit()
+    finally:
+        for path in (enc_path, restored_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    audit(conn, user["id"], f"Restauración de respaldo ({len(payload)} bytes)", type="backup", ip_address=handler.client_ip())
+    return {"status": "ok", "snapshotBefore": os.path.basename(snapshot_path)}
+
+
 def api_copy_user(conn, handler, portal_id_str) -> dict:
     user = current_user(conn, handler)
     portal = get_portal_or_404(conn, portal_id_str)
@@ -899,6 +975,22 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             raise ApiError(400, "JSON inválido")
 
+    def read_body_bytes(self, max_bytes: int) -> bytes:
+        """Lee el cuerpo crudo de la request (para subidas binarias como un
+        backup .enc), con un tope propio distinto al de los JSON."""
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            raise ApiError(400, "Content-Length inválido")
+        if length <= 0:
+            raise ApiError(400, "El cuerpo de la solicitud está vacío")
+        if length > max_bytes:
+            raise ApiError(413, "El archivo es demasiado grande")
+        data = self.rfile.read(length)
+        if len(data) != length:
+            raise ApiError(400, "La subida quedó incompleta")
+        return data
+
     def cookie_value(self, name: str) -> str | None:
         header = self.headers.get("Cookie")
         if not header:
@@ -991,6 +1083,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, api_backups(conn, self))
             elif method == "GET" and len(segments) == 4 and segments[0:3] == ["api", "backups", "download"]:
                 self.send_backup(api_download_backup(conn, self, segments[3]))
+            elif method == "POST" and segments == ["api", "backups", "restore"]:
+                self.send_json(200, api_restore_backup(conn, self))
             elif method == "GET" and segments == ["api", "users"]:
                 self.send_json(200, api_users(conn, self))
             else:

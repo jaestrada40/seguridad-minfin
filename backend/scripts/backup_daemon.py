@@ -14,63 +14,20 @@ atacante que solo comprometa la clave de la app no puede leer los backups,
 y viceversa.
 """
 
-import base64
 import glob
-import hashlib
-import hmac
 import os
-import secrets
-import shutil
 import sqlite3
 import sys
 import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from app.backup_crypto import encrypt_file  # noqa: E402
 
 DB_PATH = os.getenv("DB_PATH", "/app/data/securevault.db")
 BACKUP_DIR = os.getenv("BACKUP_DIR", "/backups")
 BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", "")
 INTERVAL_SECONDS = int(os.getenv("BACKUP_INTERVAL_SECONDS", str(24 * 60 * 60)))
 RETENTION_COUNT = int(os.getenv("BACKUP_RETENTION_COUNT", "14"))
-CHUNK_SIZE = 64 * 1024
-
-
-def _keystream_at(key: bytes, offset: int, length: int) -> bytes:
-    """Keystream determinista para el rango [offset, offset+length), sin
-    reutilizar bytes entre llamadas siempre que offset avance monótonamente
-    — necesario para cifrar en streaming por chunks en vez de todo en memoria."""
-    block_size = hashlib.sha256().digest_size
-    block_index = offset // block_size
-    skip = offset % block_size
-    out = b""
-    counter = block_index
-    while len(out) < skip + length:
-        out += hmac.new(key, counter.to_bytes(8, "big"), hashlib.sha256).digest()
-        counter += 1
-    return out[skip:skip + length]
-
-
-def encrypt_file(src_path: str, dst_path: str) -> None:
-    master_key = hashlib.sha256(BACKUP_ENCRYPTION_KEY.encode()).digest()
-    nonce = secrets.token_bytes(16)
-    enc_key = hmac.new(master_key, nonce + b"enc", hashlib.sha256).digest()
-    mac_key = hmac.new(master_key, nonce + b"mac", hashlib.sha256).digest()
-
-    mac = hmac.new(mac_key, nonce, hashlib.sha256)
-    offset = 0
-    with open(src_path, "rb") as src, open(dst_path, "wb") as dst:
-        dst.write(nonce)
-        dst.write(b"\x00" * 32)  # placeholder para el tag, se rellena al final
-        while True:
-            chunk = src.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            ks = _keystream_at(enc_key, offset, len(chunk))
-            ct = bytes(a ^ b for a, b in zip(chunk, ks))
-            offset += len(chunk)
-            mac.update(ct)
-            dst.write(ct)
-        tag = mac.digest()
-        dst.seek(16)
-        dst.write(tag)
 
 
 def snapshot_db(tmp_path: str) -> None:
@@ -102,7 +59,7 @@ def run_backup() -> None:
 
     try:
         snapshot_db(tmp_snapshot)
-        encrypt_file(tmp_snapshot, final_path)
+        encrypt_file(tmp_snapshot, final_path, BACKUP_ENCRYPTION_KEY)
         size_kb = os.path.getsize(final_path) / 1024
         print(f"[backup] OK: {final_path} ({size_kb:.1f} KB)", flush=True)
     finally:
@@ -113,8 +70,8 @@ def run_backup() -> None:
 
 
 def main() -> None:
-    if len(BACKUP_ENCRYPTION_KEY) < 32 or any(marker in BACKUP_ENCRYPTION_KEY.lower() for marker in ("change-this", "cambiar_esta", "cambiar-esta", "reemplazar")):
-        raise RuntimeError("BACKUP_ENCRYPTION_KEY debe configurarse con un valor aleatorio de al menos 32 caracteres")
+    from app.backup_crypto import require_key
+    require_key(BACKUP_ENCRYPTION_KEY)
     print(f"[backup] Iniciando daemon. Intervalo: {INTERVAL_SECONDS}s. Destino: {BACKUP_DIR}", flush=True)
     while True:
         try:

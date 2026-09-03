@@ -41,6 +41,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET}
       VAULT_ADDR: http://vault:8200
       VAULT_KEYS_PATH: /keys/vault-keys.json
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:8443}
     volumes:
