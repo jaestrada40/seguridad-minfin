@@ -17,12 +17,18 @@ https://localhost:8443 {
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
 	}
 
+	# El backend anuncia su propio Server ("SecureVaultAPI/… Python/…"); lo
+	# uniformamos a "nginx" para no delatar el stack a quien pruebe /api o /health.
 	handle /api/* {
-		reverse_proxy backend:8000
+		reverse_proxy backend:8000 {
+			header_down Server "nginx"
+		}
 	}
 
 	handle /health {
-		reverse_proxy backend:8000
+		reverse_proxy backend:8000 {
+			header_down Server "nginx"
+		}
 	}
 
 	# La app se sirve solo bajo una ruta secreta (APP_SECRET_PATH en .env).
@@ -39,8 +45,29 @@ https://localhost:8443 {
 		redir {$APP_SECRET_PATH:/}/ 308
 	}
 
-	# Cualquier otra ruta (incluida "/") no revela que hay algo acá.
+	# Cualquier otra ruta (incluida "/") se hace pasar por un nginx pelado sin
+	# nada configurado: mismo cuerpo y mismo header Server que un 404 de nginx,
+	# y sin las cabeceras de seguridad que delatarían un proxy con algo detrás.
 	handle {
-		respond "Not Found" 404
+		header {
+			-Strict-Transport-Security
+			-X-Content-Type-Options
+			-X-Frame-Options
+			-Referrer-Policy
+			-Content-Security-Policy
+			-Permissions-Policy
+			Server "nginx"
+			Content-Type "text/html"
+		}
+		respond 404 {
+			body `<html>
+<head><title>404 Not Found</title></head>
+<body>
+<center><h1>404 Not Found</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
+`
+		}
 	}
 }
