@@ -14,15 +14,16 @@ import { ToastContainer, ToastMessage } from './components/Toast';
 import { ActivityView, UsersView, SettingsView } from './components/OtherViews';
 import { AuthScreen, LoginStepResult, MfaConfirmResult } from './components/AuthScreen';
 import { Portal, NavTab, FilterCategory, FilterStatus, SortOption, ActivityLog, UserSession, AppNotification, UserProfile, SystemInfo } from './types';
-import { FolderSearch, Plus } from 'lucide-react';
+import { FolderSearch, Plus, RotateCcw } from 'lucide-react';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
-  const [mfaRequest, setMfaRequest] = useState<{ action: 'reveal' | 'backup' | 'import'; resolve: (approved: boolean) => void } | null>(null);
+  const [mfaRequest, setMfaRequest] = useState<{ action: 'reveal' | 'backup' | 'import' | 'restore'; resolve: (approved: boolean) => void } | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importPreview, setImportPreview] = useState<any[] | null>(null);
+  const [restoreCountdown, setRestoreCountdown] = useState<number | null>(null);
 
   const [portals, setPortals] = useState<Portal[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -296,7 +297,33 @@ export default function App() {
     } catch (error) { addToast('warning', 'No se pudo descargar el respaldo', error instanceof Error ? error.message : undefined); }
   };
 
-  const requestMfa = (action: 'reveal' | 'backup' | 'import') => new Promise<boolean>((resolve) => setMfaRequest({ action, resolve }));
+  const requestMfa = (action: 'reveal' | 'backup' | 'import' | 'restore') => new Promise<boolean>((resolve) => setMfaRequest({ action, resolve }));
+
+  const handleRestoreBackup = async (file: File) => {
+    if (!await requestMfa('restore')) return;
+    try {
+      const response = await fetch('/api/backups/restore', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/octet-stream', 'X-Requested-With': 'SecureVaultFrontend' },
+        body: await file.arrayBuffer(),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || 'No se pudo restaurar el respaldo');
+      const result = await response.json();
+      addToast('success', 'Respaldo restaurado', `La base fue reemplazada. Copia previa guardada como ${result.snapshotBefore}.`);
+      // Restaurar reemplaza toda la base, incluida la tabla de sesiones: la
+      // sesión actual deja de existir. Avisamos y forzamos un nuevo login.
+      let remaining = 5;
+      setRestoreCountdown(remaining);
+      const timer = window.setInterval(() => {
+        remaining -= 1;
+        setRestoreCountdown(remaining);
+        if (remaining <= 0) { window.clearInterval(timer); window.location.reload(); }
+      }, 1000);
+    } catch (error) {
+      addToast('warning', 'No se pudo restaurar el respaldo', error instanceof Error ? error.message : undefined);
+    }
+  };
 
   const handleImportExcel = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -497,7 +524,7 @@ export default function App() {
 
           {currentTab === 'actividad' && isAdmin && <ActivityView logs={activityLogs} />}
           {currentTab === 'usuarios' && isAdmin && <UsersView users={users} onResetMfa={handleResetMfa} onChangeOwnPassword={() => setIsChangePasswordOpen(true)} />}
-          {currentTab === 'configuracion' && isAdmin && <SettingsView onUpdateLogo={handleUpdateLogo} onDownloadBackup={handleDownloadBackup} logoRefreshKey={logoRefreshKey} onShowToast={addToast} systemInfo={systemInfo} />}
+          {currentTab === 'configuracion' && isAdmin && <SettingsView onUpdateLogo={handleUpdateLogo} onDownloadBackup={handleDownloadBackup} onRestoreBackup={handleRestoreBackup} logoRefreshKey={logoRefreshKey} onShowToast={addToast} systemInfo={systemInfo} />}
         </main>
       </div>
 
@@ -522,6 +549,28 @@ export default function App() {
         onSubmit={handleChangePassword}
       />
       <MfaReauthModal isOpen={Boolean(mfaRequest)} action={mfaRequest?.action || 'reveal'} onClose={cancelMfa} onSubmit={completeMfa} />
+      {restoreCountdown !== null && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm" role="alertdialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-3xl border border-white/15 bg-white p-6 text-center shadow-2xl">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700"><RotateCcw className="h-6 w-6" /></div>
+            <h2 className="mt-4 text-lg font-extrabold text-slate-900">Respaldo restaurado</h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-500">
+              La base de datos fue reemplazada, así que tu sesión actual dejó de ser válida.
+              Vas a tener que volver a iniciar sesión.
+            </p>
+            <p className="mt-4 text-sm font-bold text-slate-900">
+              Tu sesión se cerrará en {Math.max(0, restoreCountdown)} s…
+            </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-5 inline-flex items-center justify-center rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-indigo-500/25 hover:bg-indigo-700"
+            >
+              Ir al inicio de sesión ahora
+            </button>
+          </div>
+        </div>
+      )}
       {importPreview && <div className="fixed inset-0 z-[81] flex items-center justify-center bg-slate-950/60 p-4"><div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl"><h2 className="text-lg font-extrabold">Vista previa de importación</h2><p className="mt-1 text-sm text-slate-500">Se importarán {importPreview.length} portales. Las contraseñas no se muestran.</p><div className="mt-4 max-h-52 overflow-auto rounded-xl border"><table className="w-full text-left text-xs"><thead className="bg-slate-50"><tr><th className="p-2">Cuenta</th><th>URL administrativa</th><th>Usuario</th></tr></thead><tbody>{importPreview.slice(0,20).map((row,i)=><tr key={i} className="border-t"><td className="p-2">{row.name}</td><td>{row.url}</td><td>{row.username}</td></tr>)}</tbody></table></div><div className="mt-5 flex justify-end gap-3"><button onClick={()=>setImportPreview(null)} className="rounded-xl border px-4 py-2 text-sm font-bold">Cancelar</button><button onClick={async()=>{try{const result=await api('/api/portals/import',{method:'POST',body:JSON.stringify({rows:importPreview})});setImportPreview(null);addToast('success','Importación completada',`${result.imported} portales importados.`);fetchPortals();fetchActivity()}catch(error){addToast('warning','No se pudo importar Excel',error instanceof Error?error.message:undefined)}}} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-bold text-white">Importar {importPreview.length} portales</button></div></div></div>}
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />

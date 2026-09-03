@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import sqlite3
+import tempfile
 import threading
 import time
 import traceback
@@ -21,9 +22,11 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import vault_client
+from . import backup_crypto, vault_client
 
 DB_PATH = os.getenv("DB_PATH", "/app/data/securevault.db")
+BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", "")
+MAX_BACKUP_UPLOAD_BYTES = 64 * 1024 * 1024
 def required_secret(name: str, minimum_length: int = 32) -> str:
     value = os.getenv(name, "")
     unsafe_markers = ("change-this", "cambiar_esta", "cambiar-esta", "reemplazar")
@@ -88,7 +91,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             auth_method TEXT NOT NULL DEFAULT 'Local (Dev)',
             last_login REAL,
             totp_secret TEXT,
-            mfa_enabled INTEGER NOT NULL DEFAULT 0
+            mfa_enabled INTEGER NOT NULL DEFAULT 0,
+            last_totp_step INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS portals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,6 +148,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
     if "mfa_enabled" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0")
+    if "last_totp_step" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN last_totp_step INTEGER NOT NULL DEFAULT 0")
     session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
     if "reauth_until" not in session_columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN reauth_until REAL")
@@ -234,11 +240,33 @@ def totp_code_at(secret: str, counter: int) -> str:
     return str(truncated % (10 ** TOTP_DIGITS)).zfill(TOTP_DIGITS)
 
 
-def verify_totp(secret: str, code: str, window: int = 1) -> bool:
+def verify_totp(secret: str, code: str, window: int = 1) -> int | None:
+    """Devuelve el contador (paso de 30 s) con el que el código es válido, o
+    None si no lo es. El contador se usa para impedir reutilizar el mismo
+    código dentro de su ventana de validez (anti-replay, RFC 6238 §5.2)."""
     if not code or not code.isdigit() or len(code) != TOTP_DIGITS:
-        return False
+        return None
     counter = int(time.time()) // TOTP_STEP
-    return any(hmac.compare_digest(totp_code_at(secret, counter + delta), code) for delta in range(-window, window + 1))
+    for delta in range(-window, window + 1):
+        if hmac.compare_digest(totp_code_at(secret, counter + delta), code):
+            return counter + delta
+    return None
+
+
+def consume_totp(conn: sqlite3.Connection, user: sqlite3.Row, code: str) -> str:
+    """Valida un código TOTP y lo marca como usado. Un código sirve una sola
+    vez aunque siga dentro de su ventana de validez. Devuelve:
+      "ok"      — válido y recién consumido
+      "reused"  — era un código válido pero ya se había usado
+      "invalid" — no corresponde a ningún paso vigente
+    """
+    step = verify_totp(user["totp_secret"], code)
+    if step is None:
+        return "invalid"
+    if step <= (user["last_totp_step"] or 0):
+        return "reused"
+    conn.execute("UPDATE users SET last_totp_step = ? WHERE id = ?", (step, user["id"]))
+    return "ok"
 
 
 def otpauth_url(username: str, secret: str) -> str:
@@ -416,13 +444,16 @@ def api_mfa_confirm(conn, handler):
 
     user_id = verify_pending_mfa_token(pending_token)
     user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    if not user or not user["is_active"] or not user["totp_secret"] or not verify_totp(user["totp_secret"], code):
+    totp_result = consume_totp(conn, user, code) if (user and user["is_active"] and user["totp_secret"]) else "invalid"
+    if totp_result != "ok":
         attempts += 1
         with failed_logins_lock:
             if len(failed_logins) >= MAX_TRACKED_IPS:
                 failed_logins.clear()
             failed_logins[key] = (0, time.time() + 900) if attempts >= 5 else (attempts, 0)
         audit(conn, user["id"] if user else None, "Código MFA incorrecto", type="auth", ip_address=key)
+        if totp_result == "reused":
+            raise ApiError(401, "Ese código ya se usó. Espera a que tu app genere el siguiente.")
         raise ApiError(401, "Código incorrecto")
 
     with failed_logins_lock:
@@ -483,10 +514,13 @@ def api_mfa_reauth(conn, handler) -> dict:
     data = handler.read_json()
     code = require_str(data, "code", 6, 6)
     action = require_str(data, "action", 1, 20)
-    if action not in ("reveal", "backup", "import"):
+    if action not in ("reveal", "backup", "import", "restore"):
         raise ApiError(422, "Acción MFA inválida")
-    if not user["totp_secret"] or not verify_totp(user["totp_secret"], code):
+    totp_result = consume_totp(conn, user, code) if user["totp_secret"] else "invalid"
+    if totp_result != "ok":
         audit(conn, user["id"], "Reautenticación MFA fallida", type="auth", ip_address=handler.client_ip())
+        if totp_result == "reused":
+            raise ApiError(401, "Ese código ya se usó. Espera a que tu app genere el siguiente.")
         raise ApiError(401, "Código MFA incorrecto")
     conn.execute(
         "UPDATE sessions SET reauth_until = ?, reauth_action = ? WHERE id = ?",
@@ -508,7 +542,7 @@ def api_reset_mfa(conn, handler, user_id_str) -> dict:
     target = conn.execute("SELECT * FROM users WHERE id = ?", (target_id,)).fetchone()
     if not target:
         raise ApiError(404, "Usuario no encontrado")
-    conn.execute("UPDATE users SET totp_secret = NULL, mfa_enabled = 0 WHERE id = ?", (target_id,))
+    conn.execute("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, last_totp_step = 0 WHERE id = ?", (target_id,))
     conn.execute("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", (time.time(), target_id))
     conn.commit()
     audit(conn, admin["id"], f"Reset de MFA ({target['username']})", type="update", ip_address=handler.client_ip())
@@ -575,6 +609,10 @@ def api_system_settings(conn, handler) -> dict:
             "initialized": vault["initialized"],
             "sealed": vault["sealed"],
             "version": vault["version"],
+        },
+        "backups": {
+            "restoreAvailable": bool(BACKUP_ENCRYPTION_KEY),
+            "maxUploadMb": MAX_BACKUP_UPLOAD_BYTES // (1024 * 1024),
         },
         "catalog": {
             "portalsTotal": portals["total"] or 0,
@@ -780,6 +818,75 @@ def api_download_backup(conn, handler, filename: str) -> Path:
     return path
 
 
+SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _assert_valid_sqlite(path: str) -> None:
+    with open(path, "rb") as f:
+        if f.read(16) != SQLITE_MAGIC:
+            raise ApiError(422, "El archivo restaurado no es una base de datos SQLite válida")
+    probe = sqlite3.connect(path)
+    try:
+        if probe.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise ApiError(422, "La base restaurada no pasó el chequeo de integridad")
+        tables = {row[0] for row in probe.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    except sqlite3.DatabaseError:
+        raise ApiError(422, "El archivo restaurado está dañado o no es una base SQLite legible")
+    finally:
+        probe.close()
+    missing = {"users", "portals", "audit_logs"} - tables
+    if missing:
+        raise ApiError(422, "El backup no parece de SecureVault (faltan tablas: %s)" % ", ".join(sorted(missing)))
+
+
+def api_restore_backup(conn, handler) -> dict:
+    user = current_user(conn, handler)
+    if user["role"] != "Administrador":
+        raise ApiError(403, "No tiene permisos para restaurar respaldos")
+    if not BACKUP_ENCRYPTION_KEY:
+        raise ApiError(503, "Restauración no disponible: falta BACKUP_ENCRYPTION_KEY en el backend")
+    consume_mfa_reauth(conn, handler, "restore")
+
+    payload = handler.read_body_bytes(MAX_BACKUP_UPLOAD_BYTES)
+    work_dir = os.path.dirname(DB_PATH)
+    fd_enc, enc_path = tempfile.mkstemp(suffix=".enc", dir=work_dir)
+    with os.fdopen(fd_enc, "wb") as f:
+        f.write(payload)
+    fd_db, restored_path = tempfile.mkstemp(suffix=".db", dir=work_dir)
+    os.close(fd_db)
+    os.remove(restored_path)  # decrypt_file lo vuelve a crear
+    snapshot_path = os.path.join(work_dir, time.strftime("securevault-pre-restore-%Y%m%d-%H%M%S.db"))
+
+    try:
+        try:
+            backup_crypto.decrypt_file(enc_path, restored_path, BACKUP_ENCRYPTION_KEY)
+        except ValueError as e:
+            raise ApiError(422, str(e))
+        _assert_valid_sqlite(restored_path)
+
+        snapshot = sqlite3.connect(snapshot_path)
+        try:
+            conn.backup(snapshot)   # copia previa de la base actual, por si hay que volver atrás
+        finally:
+            snapshot.close()
+
+        source = sqlite3.connect(restored_path)
+        try:
+            source.backup(conn)     # reemplaza la base viva in-place; otras conexiones ven el estado nuevo
+        finally:
+            source.close()
+        conn.commit()
+    finally:
+        for path in (enc_path, restored_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    audit(conn, user["id"], f"Restauración de respaldo ({len(payload)} bytes)", type="backup", ip_address=handler.client_ip())
+    return {"status": "ok", "snapshotBefore": os.path.basename(snapshot_path)}
+
+
 def api_copy_user(conn, handler, portal_id_str) -> dict:
     user = current_user(conn, handler)
     portal = get_portal_or_404(conn, portal_id_str)
@@ -899,6 +1006,22 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             raise ApiError(400, "JSON inválido")
 
+    def read_body_bytes(self, max_bytes: int) -> bytes:
+        """Lee el cuerpo crudo de la request (para subidas binarias como un
+        backup .enc), con un tope propio distinto al de los JSON."""
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            raise ApiError(400, "Content-Length inválido")
+        if length <= 0:
+            raise ApiError(400, "El cuerpo de la solicitud está vacío")
+        if length > max_bytes:
+            raise ApiError(413, "El archivo es demasiado grande")
+        data = self.rfile.read(length)
+        if len(data) != length:
+            raise ApiError(400, "La subida quedó incompleta")
+        return data
+
     def cookie_value(self, name: str) -> str | None:
         header = self.headers.get("Cookie")
         if not header:
@@ -991,6 +1114,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, api_backups(conn, self))
             elif method == "GET" and len(segments) == 4 and segments[0:3] == ["api", "backups", "download"]:
                 self.send_backup(api_download_backup(conn, self, segments[3]))
+            elif method == "POST" and segments == ["api", "backups", "restore"]:
+                self.send_json(200, api_restore_backup(conn, self))
             elif method == "GET" and segments == ["api", "users"]:
                 self.send_json(200, api_users(conn, self))
             else:

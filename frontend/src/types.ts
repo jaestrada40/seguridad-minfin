@@ -65,6 +65,10 @@ export interface SystemInfo {
     sealed: boolean | null;
     version: string | null;
   };
+  backups: {
+    restoreAvailable: boolean;
+    maxUploadMb: number;
+  };
   catalog: {
     portalsTotal: number;
     portalsActive: number;

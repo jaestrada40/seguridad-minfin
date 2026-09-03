@@ -1,12 +1,28 @@
 import { useEffect, useState } from 'react';
 import { Clock3, ShieldCheck, X } from 'lucide-react';
 
+type MfaAction = 'reveal' | 'backup' | 'import' | 'restore';
+
 interface Props {
   isOpen: boolean;
-  action: 'reveal' | 'backup' | 'import';
+  action: MfaAction;
   onClose: () => void;
   onSubmit: (code: string) => Promise<string | null>;
 }
+
+const TITLES: Record<MfaAction, string> = {
+  reveal: 'Confirmar copia de contraseña',
+  backup: 'Confirmar descarga de respaldo',
+  import: 'Confirmar importación Excel',
+  restore: 'Confirmar restauración de respaldo',
+};
+
+const DETAILS: Record<MfaAction, string> = {
+  reveal: 'Por seguridad, ingresa tu código MFA para revelar esta contraseña. Esta confirmación se consume en una sola copia.',
+  backup: 'Por seguridad, ingresa tu código MFA para descargar el respaldo cifrado. Esta confirmación se consume en una sola descarga.',
+  import: 'Por seguridad, ingresa tu código MFA antes de importar credenciales desde Excel.',
+  restore: 'Por seguridad, ingresa tu código MFA antes de reemplazar la base de datos con el respaldo subido. Esta confirmación se consume una sola vez.',
+};
 
 export function MfaReauthModal({ isOpen, action, onClose, onSubmit }: Props) {
   const [code, setCode] = useState('');
@@ -22,10 +38,8 @@ export function MfaReauthModal({ isOpen, action, onClose, onSubmit }: Props) {
   }, [isOpen]);
 
   if (!isOpen) return null;
-  const title = action === 'reveal' ? 'Confirmar copia de contraseña' : action === 'backup' ? 'Confirmar descarga de respaldo' : 'Confirmar importación Excel';
-  const detail = action === 'reveal'
-    ? 'Por seguridad, ingresa tu código MFA para revelar esta contraseña. Esta confirmación se consume en una sola copia.'
-    : action === 'backup' ? 'Por seguridad, ingresa tu código MFA para descargar el respaldo cifrado. Esta confirmación se consume en una sola descarga.' : 'Por seguridad, ingresa tu código MFA antes de importar credenciales desde Excel.';
+  const title = TITLES[action];
+  const detail = DETAILS[action];
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
