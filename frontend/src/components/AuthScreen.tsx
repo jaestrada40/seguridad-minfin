@@ -132,7 +132,7 @@ export function AuthScreen({ onLogin, onMfaConfirm }: AuthScreenProps) {
 
       <div className="relative w-full max-w-md z-10">
         <div className="flex flex-col items-center text-center mb-8">
-          <Logo size={56} className="mb-3" />
+          <Logo size={96} className="mb-4" />
           <h1 className="text-2xl font-black tracking-tight text-white flex items-center gap-2">
             ControlCenter
             <span className="rounded-lg bg-indigo-500/20 px-2 py-0.5 text-xs font-bold text-indigo-300 border border-indigo-400/30">Local</span>

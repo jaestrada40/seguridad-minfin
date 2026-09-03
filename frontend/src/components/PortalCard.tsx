@@ -1,5 +1,5 @@
 import { useState, type MouseEvent } from 'react';
-import { ExternalLink, Copy, Check, Lock, User, Globe, AppWindow, Info, Trash2, ToggleLeft, ToggleRight, Eye } from 'lucide-react';
+import { ExternalLink, Copy, Check, Lock, User, Globe, AppWindow, Info, Trash2, ToggleLeft, ToggleRight, Eye, Pencil } from 'lucide-react';
 import { Portal, UserRole } from '../types';
 
 interface PortalCardProps {
@@ -11,6 +11,7 @@ interface PortalCardProps {
   onViewDetails: (portal: Portal) => void;
   onToggleStatus?: (portal: Portal) => void;
   onDeletePortal?: (portal: Portal) => void;
+  onEditPortal?: (portal: Portal) => void;
 }
 
 export function PortalCard({
@@ -22,6 +23,7 @@ export function PortalCard({
   onViewDetails,
   onToggleStatus,
   onDeletePortal,
+  onEditPortal,
 }: PortalCardProps) {
   const [copiedUser, setCopiedUser] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
@@ -102,10 +104,10 @@ export function PortalCard({
 
             <span
               className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 bg-slate-100/80 px-2 py-0.5 rounded-full shrink-0 border border-slate-200/40"
-              title={`Este portal se ha abierto ${portal.openCount || 0} veces`}
+              title={`La contraseña de este portal se ha revelado/copiado ${portal.revealCount || 0} veces`}
             >
               <Eye className="h-3 w-3 text-indigo-500" />
-              <span>{portal.openCount || 0}</span>
+              <span>{portal.revealCount || 0}</span>
             </span>
           </div>
 
@@ -213,6 +215,9 @@ export function PortalCard({
 
         {isAdmin && (
           <div className="pt-2 mt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+            <button type="button" onClick={() => onEditPortal?.(portal)} className="inline-flex items-center gap-1.5 text-[11px] font-bold text-indigo-600 hover:text-indigo-800 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition-colors cursor-pointer" title="Editar portal">
+              <Pencil className="h-3.5 w-3.5" /><span>Editar</span>
+            </button>
             <button
               id={`btn-toggle-status-${portal.id}`}
               type="button"

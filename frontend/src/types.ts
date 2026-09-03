@@ -12,7 +12,7 @@ export interface Portal {
   department?: string | null;
   createdAt: string;
   hasPassword?: boolean;
-  openCount?: number;
+  revealCount?: number;
   /** Solo se usa al enviar el formulario de alta/edición; nunca viene del backend. */
   password?: string;
 }
@@ -44,6 +44,35 @@ export interface UserProfile {
   status: 'Activo' | 'Suspendido';
   lastLogin: string;
   mfaEnabled?: boolean;
+}
+
+export interface SystemInfo {
+  session: {
+    cookieSecure: boolean;
+    corsOrigin: string;
+    sessionTtlHours: number;
+    mfaRequired: boolean;
+    mfaAlgorithm: string;
+    loginLockout: string;
+    csrfHeader: string;
+  };
+  vault: {
+    address: string;
+    secretPath: string;
+    engine: string;
+    reachable: boolean;
+    initialized: boolean | null;
+    sealed: boolean | null;
+    version: string | null;
+  };
+  catalog: {
+    portalsTotal: number;
+    portalsActive: number;
+    portalsWithPassword: number;
+    activeUsers: number;
+    passwordReveals: number;
+    portalsLimit: number;
+  };
 }
 
 export interface ActivityLog {

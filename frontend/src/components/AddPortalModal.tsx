@@ -13,13 +13,12 @@ export function AddPortalModal({ isOpen, onClose, onSave, editingPortal }: AddPo
   const isEditing = !!editingPortal;
   const [name, setName] = useState('');
   const [category, setCategory] = useState<PortalCategory>('WordPress');
-  const [url, setUrl] = useState('https://demo.local/');
+  const [url, setUrl] = useState('https://');
   const [username, setUsername] = useState('');
   const [status, setStatus] = useState<PortalStatus>('Activo');
   const [department, setDepartment] = useState('');
   const [description, setDescription] = useState('');
   const [password, setPassword] = useState('');
-  const [touchedPassword, setTouchedPassword] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
 
@@ -27,13 +26,12 @@ export function AddPortalModal({ isOpen, onClose, onSave, editingPortal }: AddPo
     if (!isOpen) return;
     setName(editingPortal?.name ?? '');
     setCategory(editingPortal?.category ?? 'WordPress');
-    setUrl(editingPortal?.url ?? 'https://demo.local/');
+    setUrl(editingPortal?.url ?? 'https://');
     setUsername(editingPortal?.username ?? '');
     setStatus(editingPortal?.status ?? 'Activo');
     setDepartment(editingPortal?.department ?? '');
     setDescription(editingPortal?.description ?? '');
     setPassword('');
-    setTouchedPassword(false);
     setShowPassword(false);
     setError('');
   }, [isOpen, editingPortal]);
@@ -64,7 +62,9 @@ export function AddPortalModal({ isOpen, onClose, onSave, editingPortal }: AddPo
       department: department.trim() || undefined,
       description: description.trim() || undefined,
     };
-    if (!isEditing || touchedPassword) {
+    if (!isEditing && password.trim()) {
+      payload.password = password;
+    } else if (isEditing && password.trim()) {
       payload.password = password;
     }
 
@@ -177,7 +177,6 @@ export function AddPortalModal({ isOpen, onClose, onSave, editingPortal }: AddPo
                 value={password}
                 onChange={(e) => {
                   setPassword(e.target.value);
-                  setTouchedPassword(true);
                 }}
                 autoComplete="new-password"
                 placeholder={isEditing && editingPortal?.hasPassword ? 'Dejar vacío para no cambiarla' : 'Contraseña real del portal'}
@@ -191,11 +190,7 @@ export function AddPortalModal({ isOpen, onClose, onSave, editingPortal }: AddPo
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
-            {isEditing && editingPortal?.hasPassword && touchedPassword && password === '' && (
-              <p className="mt-1 text-[11px] text-amber-700 flex items-center gap-1">
-                <ShieldAlert className="h-3 w-3" /> Se eliminará la contraseña guardada de este portal.
-              </p>
-            )}
+            {isEditing && editingPortal?.hasPassword && <p className="mt-1 text-[11px] text-slate-500">Déjalo vacío para conservar la contraseña actual.</p>}
           </div>
 
           <div>

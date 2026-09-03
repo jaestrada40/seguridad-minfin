@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 os.environ["ADMIN_USERNAME"] = "admin.test"
 os.environ["ADMIN_PASSWORD"] = "test-password-1234"
-os.environ["SESSION_SECRET"] = "test-secret"
+os.environ["SESSION_SECRET"] = "test-session-secret-which-is-at-least-32-bytes"
 
 _db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _db_file.close()
@@ -105,6 +105,11 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertEqual(status, 200, confirmed)
         cookie = set_cookie.split(";", 1)[0]
         return cookie
+
+    def reauth(self, cookie, action="reveal"):
+        code = app_main.totp_code_at(type(self)._known_secret, int(time.time()) // app_main.TOTP_STEP)
+        status, payload, _ = self.request("POST", "/api/auth/mfa/reauth", {"code": code, "action": action}, cookie=cookie)
+        self.assertEqual(status, 200, payload)
 
     def test_health(self):
         status, payload, _ = self.request("GET", "/health")
@@ -210,11 +215,16 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertNotIn("password", created)
         self.assertNotIn("password_encrypted", created)
 
-        status, revealed, _ = self.request(
+        status, denied, _ = self.request(
             "POST", f"/api/portals/{created['id']}/reveal-password", cookie=cookie
         )
+        self.assertEqual(status, 403, denied)
+        self.reauth(cookie)
+        status, revealed, _ = self.request("POST", f"/api/portals/{created['id']}/reveal-password", cookie=cookie)
         self.assertEqual(status, 200, revealed)
         self.assertEqual(revealed["password"], "MiClaveReal123")
+        status, denied_again, _ = self.request("POST", f"/api/portals/{created['id']}/reveal-password", cookie=cookie)
+        self.assertEqual(status, 403, denied_again)
 
     def test_reveal_password_without_password_404(self):
         cookie = self.login()
@@ -226,6 +236,7 @@ class ApiSmokeTest(unittest.TestCase):
         )
         self.assertEqual(status, 201, created)
         self.assertFalse(created["hasPassword"])
+        self.reauth(cookie)
         status, payload, _ = self.request(
             "POST", f"/api/portals/{created['id']}/reveal-password", cookie=cookie
         )
@@ -266,7 +277,7 @@ class ApiSmokeTest(unittest.TestCase):
         status, payload, _ = self.request("POST", f"/api/users/{admin_id}/reset-mfa", cookie=cookie)
         self.assertEqual(status, 200, payload)
         status, users_after, _ = self.request("GET", "/api/users", cookie=cookie)
-        self.assertFalse(users_after[0]["mfaEnabled"])
+        self.assertEqual(status, 401)
         # el próximo login vuelve a pedir configurar MFA desde cero
         status, relog, _ = self.request(
             "POST", "/api/auth/login", {"username": "admin.test", "password": "test-password-1234"}
@@ -284,9 +295,6 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertEqual(payload[0]["username"], "admin.test")
 
     def test_logout_clears_cookie(self):
-        # El backend usa tokens firmados sin estado (sin revocación en servidor): logout
-        # borra la cookie en el cliente, no invalida el token si se reutiliza a mano.
-        # Simulamos un cliente real que respeta el Set-Cookie de borrado del logout.
         cookie = self.login()
         status, _, set_cookie = self.request("POST", "/api/auth/logout", cookie=cookie)
         self.assertEqual(status, 200)
@@ -294,6 +302,27 @@ class ApiSmokeTest(unittest.TestCase):
         cleared_cookie = set_cookie.split(";", 1)[0]
         status, _, _ = self.request("GET", "/api/auth/me", cookie=cleared_cookie)
         self.assertEqual(status, 401)
+        status, _, _ = self.request("GET", "/api/auth/me", cookie=cookie)
+        self.assertEqual(status, 401)
+
+    def test_viewer_cannot_reveal_password(self):
+        cookie = self.login()
+        conn = app_main.get_db()
+        conn.execute(
+            "INSERT INTO users (username, display_name, password_hash, role, is_active, auth_method) VALUES (?,?,?,?,?,?)",
+            ("viewer.test", "Viewer", app_main.password_hash("viewer-password-1234"), "Visor", 1, "Local"),
+        )
+        conn.commit()
+        status, created, _ = self.request(
+            "POST", "/api/portals",
+            {"name": "Solo operadores", "category": "Aplicación", "url": "https://demo.local/secret", "username": "u", "password": "MiClaveReal123"},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 201, created)
+        viewer = app_main.make_token(conn.execute("SELECT id FROM users WHERE username = ?", ("viewer.test",)).fetchone()["id"])
+        viewer_cookie = f"{app_main.COOKIE}={viewer}"
+        status, _, _ = self.request("POST", f"/api/portals/{created['id']}/reveal-password", cookie=viewer_cookie)
+        self.assertEqual(status, 403)
 
 
 if __name__ == "__main__":

@@ -107,10 +107,10 @@ export function PortalDetailsModal({ portal, isOpen, onClose, onCopyUser, onCopy
               <span className="font-bold text-slate-900">{portal.category}</span>
             </div>
             <div className="flex items-center justify-between text-slate-600">
-              <span className="text-slate-400 font-medium">Aperturas registradas:</span>
+              <span className="text-slate-400 font-medium">Contraseña revelada:</span>
               <span className="inline-flex items-center gap-1 font-bold text-indigo-600">
                 <Eye className="h-3.5 w-3.5" />
-                {portal.openCount || 0} veces
+                {portal.revealCount || 0} veces
               </span>
             </div>
             <div className="flex items-center justify-between text-slate-600">

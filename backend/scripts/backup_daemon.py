@@ -27,7 +27,7 @@ import time
 
 DB_PATH = os.getenv("DB_PATH", "/app/data/securevault.db")
 BACKUP_DIR = os.getenv("BACKUP_DIR", "/backups")
-BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", "change-this-local-backup-key")
+BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", "")
 INTERVAL_SECONDS = int(os.getenv("BACKUP_INTERVAL_SECONDS", str(24 * 60 * 60)))
 RETENTION_COUNT = int(os.getenv("BACKUP_RETENTION_COUNT", "14"))
 CHUNK_SIZE = 64 * 1024
@@ -113,6 +113,8 @@ def run_backup() -> None:
 
 
 def main() -> None:
+    if len(BACKUP_ENCRYPTION_KEY) < 32 or any(marker in BACKUP_ENCRYPTION_KEY.lower() for marker in ("change-this", "cambiar_esta", "cambiar-esta", "reemplazar")):
+        raise RuntimeError("BACKUP_ENCRYPTION_KEY debe configurarse con un valor aleatorio de al menos 32 caracteres")
     print(f"[backup] Iniciando daemon. Intervalo: {INTERVAL_SECONDS}s. Destino: {BACKUP_DIR}", flush=True)
     while True:
         try:

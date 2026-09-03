@@ -17,19 +17,32 @@ import sqlite3
 import threading
 import time
 import traceback
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
 
 from . import vault_client
 
 DB_PATH = os.getenv("DB_PATH", "/app/data/securevault.db")
-SESSION_SECRET = os.getenv("SESSION_SECRET", "change-this-local-session-secret")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin.local")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "cambiar-esta-clave")
+def required_secret(name: str, minimum_length: int = 32) -> str:
+    value = os.getenv(name, "")
+    unsafe_markers = ("change-this", "cambiar_esta", "cambiar-esta", "reemplazar")
+    if len(value) < minimum_length or any(marker in value.lower() for marker in unsafe_markers):
+        raise RuntimeError(f"{name} debe configurarse con un valor aleatorio de al menos {minimum_length} caracteres")
+    return value
+
+
+SESSION_SECRET = required_secret("SESSION_SECRET")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "")
+ADMIN_PASSWORD = required_secret("ADMIN_PASSWORD", 12)
+if not ADMIN_USERNAME:
+    raise RuntimeError("ADMIN_USERNAME debe configurarse")
 CORS_ORIGIN = os.getenv("CORS_ORIGIN", "http://localhost:3000")
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 COOKIE = "securevault_session"
 TTL = 8 * 60 * 60
+MFA_REAUTH_TTL = 60
+BACKUP_DIR = Path(os.getenv("BACKUP_DIR", "/backups"))
 MAX_TRACKED_IPS = 10_000
 DEFAULT_PORTALS_LIMIT = 200
 MAX_PORTALS_LIMIT = 500
@@ -101,6 +114,15 @@ def init_db(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY CHECK (id = 1),
             logo_data_url TEXT
         );
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            expires_at REAL NOT NULL,
+            revoked_at REAL,
+            reauth_until REAL,
+            reauth_action TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
         """
     )
     portal_columns = {row["name"] for row in conn.execute("PRAGMA table_info(portals)")}
@@ -122,6 +144,11 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
     if "mfa_enabled" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0")
+    session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
+    if "reauth_until" not in session_columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN reauth_until REAL")
+    if "reauth_action" not in session_columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN reauth_action TEXT")
     if not conn.execute("SELECT id FROM app_settings WHERE id = 1").fetchone():
         conn.execute("INSERT INTO app_settings (id, logo_data_url) VALUES (1, NULL)")
     conn.commit()
@@ -151,7 +178,11 @@ DUMMY_HASH = password_hash("dummy-password-for-constant-time-login")
 
 
 def make_token(user_id: int) -> str:
-    body = base64.urlsafe_b64encode(json.dumps({"sub": user_id, "exp": int(time.time()) + TTL}).encode()).decode().rstrip("=")
+    session_id = secrets.token_urlsafe(32)
+    expires_at = int(time.time()) + TTL
+    get_db().execute("INSERT INTO sessions (id, user_id, expires_at) VALUES (?,?,?)", (session_id, user_id, expires_at))
+    get_db().commit()
+    body = base64.urlsafe_b64encode(json.dumps({"sub": user_id, "sid": session_id, "exp": expires_at}).encode()).decode().rstrip("=")
     signature = hmac.new(SESSION_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
     return body + "." + signature
 
@@ -252,8 +283,14 @@ def current_user(conn: sqlite3.Connection, handler: "Handler") -> sqlite3.Row:
     user, valid = None, False
     try:
         payload = json.loads(base64.urlsafe_b64decode(body + "===").decode())
-        user = conn.execute("SELECT * FROM users WHERE id = ?", (int(payload["sub"]),)).fetchone()
-        valid = int(payload["exp"]) >= time.time() and hmac.compare_digest(signature, expected)
+        user_id = int(payload["sub"])
+        session_id = payload["sid"]
+        session = conn.execute(
+            "SELECT 1 FROM sessions WHERE id = ? AND user_id = ? AND expires_at >= ? AND revoked_at IS NULL",
+            (session_id, user_id, time.time()),
+        ).fetchone()
+        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        valid = int(payload["exp"]) >= time.time() and bool(session) and hmac.compare_digest(signature, expected)
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         user, valid = None, False
     if not valid or not user or not user["is_active"]:
@@ -276,7 +313,7 @@ def require_str(data: dict, key: str, min_len: int, max_len: int) -> str:
     return value
 
 
-def portal_dict(row: sqlite3.Row, open_count: int = 0) -> dict:
+def portal_dict(row: sqlite3.Row, reveal_count: int = 0) -> dict:
     return {
         "id": str(row["id"]),
         "name": row["name"],
@@ -287,14 +324,14 @@ def portal_dict(row: sqlite3.Row, open_count: int = 0) -> dict:
         "hasPassword": bool(row["has_vault_password"]),
         "department": row["department"] or None,
         "description": row["description"] or None,
-        "openCount": open_count,
+        "revealCount": reveal_count,
         "createdAt": "",
     }
 
 
-def open_counts_by_portal(conn: sqlite3.Connection) -> dict:
+def reveal_counts_by_portal(conn: sqlite3.Connection) -> dict:
     rows = conn.execute(
-        "SELECT portal_name, COUNT(*) AS n FROM audit_logs WHERE type = 'access' AND portal_name IS NOT NULL GROUP BY portal_name"
+        "SELECT portal_name, COUNT(*) AS n FROM audit_logs WHERE type = 'reveal' AND portal_name IS NOT NULL GROUP BY portal_name"
     ).fetchall()
     return {r["portal_name"]: r["n"] for r in rows}
 
@@ -329,7 +366,7 @@ def api_portals(conn, handler, qs) -> list:
     else:
         rows = conn.execute("SELECT * FROM portals ORDER BY category, name LIMIT ?", (limit,)).fetchall()
     audit(conn, user["id"], "Consulta de portales", ip_address=handler.client_ip())
-    counts = open_counts_by_portal(conn)
+    counts = reveal_counts_by_portal(conn)
     return [portal_dict(r, counts.get(r["name"], 0)) for r in rows]
 
 
@@ -400,6 +437,66 @@ def api_mfa_confirm(conn, handler):
     return 200, payload, cookie
 
 
+def api_change_password(conn, handler) -> dict:
+    user = current_user(conn, handler)
+    data = handler.read_json()
+    current_password = require_str(data, "currentPassword", 1, 200)
+    new_password = require_str(data, "newPassword", 8, 200)
+    if not password_ok(current_password, user["password_hash"]):
+        audit(conn, user["id"], "Cambio de contraseña fallido (contraseña actual incorrecta)", type="auth", ip_address=handler.client_ip())
+        raise ApiError(401, "La contraseña actual es incorrecta")
+    if password_ok(new_password, user["password_hash"]):
+        raise ApiError(422, "La nueva contraseña debe ser distinta de la actual")
+    conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash(new_password), user["id"]))
+    conn.execute("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", (time.time(), user["id"]))
+    conn.commit()
+    audit(conn, user["id"], "Cambio de contraseña propia", type="auth", ip_address=handler.client_ip())
+    return {"status": "ok"}
+
+
+def current_session_id(handler: "Handler") -> str:
+    token = handler.cookie_value(COOKIE)
+    try:
+        body, signature = token.rsplit(".", 1)
+        expected = hmac.new(SESSION_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
+        payload = json.loads(base64.urlsafe_b64decode(body + "===").decode())
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        return str(payload["sid"])
+    except (AttributeError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        raise ApiError(401, "Sesión inválida")
+
+
+def consume_mfa_reauth(conn, handler, action: str) -> None:
+    cur = conn.execute(
+        "UPDATE sessions SET reauth_until = NULL, reauth_action = NULL "
+        "WHERE id = ? AND reauth_action = ? AND reauth_until >= ? AND revoked_at IS NULL",
+        (current_session_id(handler), action, time.time()),
+    )
+    conn.commit()
+    if cur.rowcount != 1:
+        raise ApiError(403, "Reautenticación MFA requerida para esta acción")
+
+
+def api_mfa_reauth(conn, handler) -> dict:
+    user = current_user(conn, handler)
+    data = handler.read_json()
+    code = require_str(data, "code", 6, 6)
+    action = require_str(data, "action", 1, 20)
+    if action not in ("reveal", "backup", "import"):
+        raise ApiError(422, "Acción MFA inválida")
+    if not user["totp_secret"] or not verify_totp(user["totp_secret"], code):
+        audit(conn, user["id"], "Reautenticación MFA fallida", type="auth", ip_address=handler.client_ip())
+        raise ApiError(401, "Código MFA incorrecto")
+    conn.execute(
+        "UPDATE sessions SET reauth_until = ?, reauth_action = ? WHERE id = ?",
+        (time.time() + MFA_REAUTH_TTL, action, current_session_id(handler)),
+    )
+    conn.commit()
+    audit(conn, user["id"], "Reautenticación MFA para acción sensible", type="auth", ip_address=handler.client_ip())
+    return {"status": "ok", "expiresInSeconds": MFA_REAUTH_TTL, "oneTime": True}
+
+
 def api_reset_mfa(conn, handler, user_id_str) -> dict:
     admin = current_user(conn, handler)
     if admin["role"] != "Administrador":
@@ -412,6 +509,7 @@ def api_reset_mfa(conn, handler, user_id_str) -> dict:
     if not target:
         raise ApiError(404, "Usuario no encontrado")
     conn.execute("UPDATE users SET totp_secret = NULL, mfa_enabled = 0 WHERE id = ?", (target_id,))
+    conn.execute("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", (time.time(), target_id))
     conn.commit()
     audit(conn, admin["id"], f"Reset de MFA ({target['username']})", type="update", ip_address=handler.client_ip())
     return {"status": "ok"}
@@ -423,7 +521,7 @@ def api_get_settings(conn, handler) -> dict:
 
 
 MAX_LOGO_DATA_URL_LENGTH = 700_000  # ~500KB de imagen tras overhead de base64
-LOGO_DATA_URL_RE = re.compile(r"^data:image/(png|jpeg|jpg|svg\+xml);base64,")
+LOGO_DATA_URL_RE = re.compile(r"^data:image/(png|jpeg|jpg|webp);base64,")
 
 
 def api_update_logo(conn, handler) -> dict:
@@ -434,11 +532,59 @@ def api_update_logo(conn, handler) -> dict:
     data_url = data.get("dataUrl")
     if data_url is not None:
         if not isinstance(data_url, str) or len(data_url) > MAX_LOGO_DATA_URL_LENGTH or not LOGO_DATA_URL_RE.match(data_url):
-            raise ApiError(422, "Imagen inválida: use PNG, JPG o SVG de menos de ~500KB")
+            raise ApiError(422, "Imagen inválida: use PNG, JPG o WebP de menos de ~500KB")
     conn.execute("UPDATE app_settings SET logo_data_url = ? WHERE id = 1", (data_url,))
     conn.commit()
     audit(conn, user["id"], "Cambio de logo institucional" if data_url else "Logo institucional eliminado", type="update", ip_address=handler.client_ip())
     return {"logoDataUrl": data_url}
+
+
+def api_system_settings(conn, handler) -> dict:
+    user = current_user(conn, handler)
+    if user["role"] != "Administrador":
+        raise ApiError(403, "No tiene permisos para ver la configuración del entorno")
+
+    portals = conn.execute(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN status = 'Activo' THEN 1 ELSE 0 END) AS activos, "
+        "SUM(has_vault_password) AS con_password FROM portals"
+    ).fetchone()
+    users_total = conn.execute("SELECT COUNT(*) AS n FROM users WHERE is_active = 1").fetchone()["n"]
+    reveals_total = conn.execute("SELECT COUNT(*) AS n FROM audit_logs WHERE type = 'reveal'").fetchone()["n"]
+
+    try:
+        vault = vault_client.health()
+    except Exception:
+        vault = {"reachable": False, "initialized": None, "sealed": None, "version": None}
+
+    return {
+        "session": {
+            "cookieSecure": COOKIE_SECURE,
+            "corsOrigin": CORS_ORIGIN,
+            "sessionTtlHours": TTL // 3600,
+            "mfaRequired": True,
+            "mfaAlgorithm": "TOTP (RFC 6238), 6 dígitos / 30 s",
+            "loginLockout": "5 intentos fallidos por IP → bloqueo 15 min",
+            "csrfHeader": f"{CSRF_HEADER}: {CSRF_HEADER_VALUE}",
+        },
+        "vault": {
+            "address": vault_client.VAULT_ADDR,
+            "secretPath": f"{vault_client.VAULT_MOUNT}/data/portals/<id>",
+            "engine": "KV v2",
+            "reachable": vault["reachable"],
+            "initialized": vault["initialized"],
+            "sealed": vault["sealed"],
+            "version": vault["version"],
+        },
+        "catalog": {
+            "portalsTotal": portals["total"] or 0,
+            "portalsActive": portals["activos"] or 0,
+            "portalsWithPassword": portals["con_password"] or 0,
+            "activeUsers": users_total,
+            "passwordReveals": reveals_total,
+            "portalsLimit": MAX_PORTALS_LIMIT,
+        },
+    }
 
 
 def api_me(conn, handler) -> dict:
@@ -485,6 +631,39 @@ def api_create_portal(conn, handler):
     row = conn.execute("SELECT * FROM portals WHERE id = ?", (cur.lastrowid,)).fetchone()
     audit(conn, user["id"], "Creación de portal", type="create", portal_name=row["name"], ip_address=handler.client_ip())
     return 201, portal_dict(row)
+
+
+def api_import_portals(conn, handler):
+    admin = current_user(conn, handler)
+    if admin["role"] != "Administrador":
+        raise ApiError(403, "No tiene permisos para importar")
+    consume_mfa_reauth(conn, handler, "import")
+    rows = handler.read_json().get("rows")
+    if not isinstance(rows, list) or not rows or len(rows) > 200:
+        raise ApiError(422, "Importación inválida: máximo 200 filas")
+    urls = []
+    for data in rows:
+        if not isinstance(data, dict) or not isinstance(data.get("url"), str):
+            raise ApiError(422, "Fila inválida")
+        urls.append(data["url"])
+    repeated = {url for url in urls if urls.count(url) > 1}
+    existing = {row[0] for row in conn.execute("SELECT url FROM portals WHERE url IN (%s)" % ",".join("?" * len(urls)), urls)}
+    duplicates = sorted(repeated | existing)
+    if duplicates:
+        raise ApiError(409, "Hay URLs duplicadas: " + ", ".join(duplicates[:5]))
+    imported = 0
+    for data in rows:
+        if not isinstance(data, dict): raise ApiError(422, "Fila inválida")
+        name = require_str(data, "name", 1, 120); url = require_str(data, "url", 1, 500); username = require_str(data, "username", 1, 120)
+        if not URL_RE.match(url): raise ApiError(422, "URL inválida")
+        password = data.get("password")
+        cur = conn.execute("INSERT INTO portals (name, category, url, username, has_vault_password) VALUES (?,?,?,?,?)", (name, "Aplicación", url, username, 1 if password else 0))
+        if password:
+            if not isinstance(password, str): raise ApiError(422, "Contraseña inválida")
+            vault_client.put_portal_password(cur.lastrowid, password)
+        imported += 1
+    conn.commit(); audit(conn, admin["id"], f"Importación Excel ({imported} portales)", type="import", ip_address=handler.client_ip())
+    return {"imported": imported}
 
 
 def api_update_portal(conn, handler, portal_id_str):
@@ -536,7 +715,7 @@ def api_update_portal(conn, handler, portal_id_str):
     conn.commit()
     row = conn.execute("SELECT * FROM portals WHERE id = ?", (portal["id"],)).fetchone()
     audit(conn, user["id"], "Edición de portal", type="update", portal_name=row["name"], ip_address=handler.client_ip())
-    counts = open_counts_by_portal(conn)
+    counts = reveal_counts_by_portal(conn)
     return portal_dict(row, counts.get(row["name"], 0))
 
 
@@ -558,6 +737,9 @@ def api_delete_portal(conn, handler, portal_id_str) -> dict:
 
 def api_reveal_password(conn, handler, portal_id_str) -> dict:
     user = current_user(conn, handler)
+    if user["role"] not in ("Administrador", "Operador"):
+        raise ApiError(403, "No tiene permisos para revelar contraseñas")
+    consume_mfa_reauth(conn, handler, "reveal")
     portal = get_portal_or_404(conn, portal_id_str)
     if not portal["has_vault_password"]:
         raise ApiError(404, "Este portal no tiene una contraseña guardada")
@@ -569,6 +751,33 @@ def api_reveal_password(conn, handler, portal_id_str) -> dict:
         raise ApiError(404, "Este portal no tiene una contraseña guardada")
     audit(conn, user["id"], "Contraseña revelada", type="reveal", portal_name=portal["name"], ip_address=handler.client_ip())
     return {"password": password}
+
+
+def backup_files() -> list[Path]:
+    if not BACKUP_DIR.is_dir():
+        return []
+    return sorted((p for p in BACKUP_DIR.glob("securevault-*.enc") if p.is_file()), reverse=True)
+
+
+def api_backups(conn, handler) -> list:
+    user = current_user(conn, handler)
+    if user["role"] != "Administrador":
+        raise ApiError(403, "No tiene permisos para ver respaldos")
+    return [{"name": p.name, "size": p.stat().st_size, "createdAt": int(p.stat().st_mtime)} for p in backup_files()]
+
+
+def api_download_backup(conn, handler, filename: str) -> Path:
+    user = current_user(conn, handler)
+    if user["role"] != "Administrador":
+        raise ApiError(403, "No tiene permisos para descargar respaldos")
+    consume_mfa_reauth(conn, handler, "backup")
+    if Path(filename).name != filename or not re.fullmatch(r"securevault-\d{8}-\d{6}\.enc", filename):
+        raise ApiError(404, "Respaldo no encontrado")
+    path = BACKUP_DIR / filename
+    if not path.is_file():
+        raise ApiError(404, "Respaldo no encontrado")
+    audit(conn, user["id"], f"Descarga de respaldo ({filename})", type="backup", ip_address=handler.client_ip())
+    return path
 
 
 def api_copy_user(conn, handler, portal_id_str) -> dict:
@@ -635,6 +844,7 @@ def cookie_attrs() -> str:
 
 
 DELETE_COOKIE = f"{COOKIE}=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/{cookie_attrs()}"
+MAX_REQUEST_BODY_BYTES = 1_048_576
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -661,8 +871,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_backup(self, path: Path) -> None:
+        size = path.stat().st_size
+        self.send_response(200)
+        self.set_cors()
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        with path.open("rb") as f:
+            while chunk := f.read(64 * 1024):
+                self.wfile.write(chunk)
+
     def read_json(self) -> dict:
-        length = int(self.headers.get("Content-Length", 0) or 0)
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            raise ApiError(400, "Content-Length inválido")
+        if length < 0 or length > MAX_REQUEST_BODY_BYTES:
+            raise ApiError(413, "Solicitud demasiado grande")
         if length == 0:
             return {}
         raw = self.rfile.read(length)
@@ -716,15 +944,28 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "POST" and segments == ["api", "auth", "login"]:
                 status, payload, cookie = api_login(conn, self)
                 self.send_json(status, payload, cookie)
+            elif method == "POST" and segments == ["api", "auth", "change-password"]:
+                self.send_json(200, api_change_password(conn, self))
             elif method == "POST" and segments == ["api", "auth", "logout"]:
+                user = current_user(conn, self)
+                token = self.cookie_value(COOKIE)
+                body, _ = token.rsplit(".", 1)
+                payload = json.loads(base64.urlsafe_b64decode(body + "===").decode())
+                conn.execute("UPDATE sessions SET revoked_at = ? WHERE id = ? AND user_id = ?", (time.time(), payload["sid"], user["id"]))
+                conn.commit()
+                audit(conn, user["id"], "Cierre de sesión", type="auth", ip_address=self.client_ip())
                 self.send_json(200, {"status": "ok"}, DELETE_COOKIE)
             elif method == "POST" and segments == ["api", "auth", "mfa", "confirm"]:
                 status, payload, cookie = api_mfa_confirm(conn, self)
                 self.send_json(status, payload, cookie)
+            elif method == "POST" and segments == ["api", "auth", "mfa", "reauth"]:
+                self.send_json(200, api_mfa_reauth(conn, self))
             elif method == "GET" and segments == ["api", "auth", "me"]:
                 self.send_json(200, api_me(conn, self))
             elif method == "GET" and segments == ["api", "settings"]:
                 self.send_json(200, api_get_settings(conn, self))
+            elif method == "GET" and segments == ["api", "settings", "system"]:
+                self.send_json(200, api_system_settings(conn, self))
             elif method == "POST" and segments == ["api", "settings", "logo"]:
                 self.send_json(200, api_update_logo(conn, self))
             elif method == "POST" and len(segments) == 4 and segments[0:2] == ["api", "users"] and segments[3] == "reset-mfa":
@@ -732,6 +973,8 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "POST" and segments == ["api", "portals"]:
                 status, payload = api_create_portal(conn, self)
                 self.send_json(status, payload)
+            elif method == "POST" and segments == ["api", "portals", "import"]:
+                self.send_json(201, api_import_portals(conn, self))
             elif method == "PATCH" and len(segments) == 3 and segments[0:2] == ["api", "portals"]:
                 self.send_json(200, api_update_portal(conn, self, segments[2]))
             elif method == "DELETE" and len(segments) == 3 and segments[0:2] == ["api", "portals"]:
@@ -744,6 +987,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, api_open_portal(conn, self, segments[2]))
             elif method == "GET" and segments == ["api", "activity"]:
                 self.send_json(200, api_activity(conn, self))
+            elif method == "GET" and segments == ["api", "backups"]:
+                self.send_json(200, api_backups(conn, self))
+            elif method == "GET" and len(segments) == 4 and segments[0:3] == ["api", "backups", "download"]:
+                self.send_backup(api_download_backup(conn, self, segments[3]))
             elif method == "GET" and segments == ["api", "users"]:
                 self.send_json(200, api_users(conn, self))
             else:

@@ -46,6 +46,26 @@ def _request(method: str, path: str, body: dict | None = None):
         raise VaultError(f"No se pudo conectar a Vault en {VAULT_ADDR}: {e}")
 
 
+def health() -> dict:
+    """Estado de Vault vía el endpoint no autenticado /v1/sys/health.
+
+    Devuelve {reachable, initialized, sealed, version} — nunca lanza, para
+    poder mostrarlo en la UI aunque Vault esté caído.
+    """
+    url = f"{VAULT_ADDR}/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            data = json.loads(resp.read() or "{}")
+        return {
+            "reachable": True,
+            "initialized": bool(data.get("initialized")),
+            "sealed": bool(data.get("sealed")),
+            "version": data.get("version"),
+        }
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError):
+        return {"reachable": False, "initialized": None, "sealed": None, "version": None}
+
+
 def put_portal_password(portal_id: int, password: str) -> None:
     _request("POST", f"/v1/{VAULT_MOUNT}/data/portals/{portal_id}", body={"data": {"password": password}})
 

@@ -12,7 +12,7 @@ import hmac
 import os
 import sys
 
-BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", "change-this-local-backup-key")
+BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", "")
 CHUNK_SIZE = 64 * 1024
 
 
@@ -55,6 +55,8 @@ def decrypt_file(src_path: str, dst_path: str) -> None:
 
 
 def main() -> None:
+    if len(BACKUP_ENCRYPTION_KEY) < 32 or any(marker in BACKUP_ENCRYPTION_KEY.lower() for marker in ("change-this", "cambiar_esta", "cambiar-esta", "reemplazar")):
+        raise RuntimeError("BACKUP_ENCRYPTION_KEY debe configurarse con un valor aleatorio de al menos 32 caracteres")
     if len(sys.argv) != 3:
         print("Uso: python restore_backup.py <archivo.enc> <destino.db>", file=sys.stderr)
         sys.exit(1)

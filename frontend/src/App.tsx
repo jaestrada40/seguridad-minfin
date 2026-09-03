@@ -1,4 +1,5 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { readSheet } from 'read-excel-file/browser';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { MetricsPanel } from './components/MetricsPanel';
@@ -7,15 +8,21 @@ import { SecurityBanner } from './components/SecurityBanner';
 import { PortalCard } from './components/PortalCard';
 import { AddPortalModal } from './components/AddPortalModal';
 import { PortalDetailsModal } from './components/PortalDetailsModal';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
+import { MfaReauthModal } from './components/MfaReauthModal';
 import { ToastContainer, ToastMessage } from './components/Toast';
 import { ActivityView, UsersView, SettingsView } from './components/OtherViews';
 import { AuthScreen, LoginStepResult, MfaConfirmResult } from './components/AuthScreen';
-import { Portal, NavTab, FilterCategory, FilterStatus, SortOption, ActivityLog, UserSession, AppNotification, UserProfile } from './types';
+import { Portal, NavTab, FilterCategory, FilterStatus, SortOption, ActivityLog, UserSession, AppNotification, UserProfile, SystemInfo } from './types';
 import { FolderSearch, Plus } from 'lucide-react';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [mfaRequest, setMfaRequest] = useState<{ action: 'reveal' | 'backup' | 'import'; resolve: (approved: boolean) => void } | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [importPreview, setImportPreview] = useState<any[] | null>(null);
 
   const [portals, setPortals] = useState<Portal[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -34,6 +41,7 @@ export default function App() {
 
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const api = async (path: string, options?: RequestInit) => {
@@ -68,7 +76,9 @@ export default function App() {
   };
 
   const fetchActivity = () => api('/api/activity').then(setActivityLogs).catch(() => {});
+  const fetchPortals = () => api('/api/portals').then(setPortals).catch(() => {});
   const fetchUsers = () => api('/api/users').then(setUsers).catch(() => {});
+  const fetchSystemInfo = () => api('/api/settings/system').then(setSystemInfo).catch(() => {});
 
   useEffect(() => {
     api('/api/auth/me')
@@ -81,7 +91,7 @@ export default function App() {
     if (!currentUser) return;
     api('/api/portals').then(setPortals).catch(() => addToast('warning', 'No se pudo cargar el catálogo', 'Verifica que la API esté disponible.'));
     fetchActivity();
-    if (currentUser.role === 'Administrador') fetchUsers();
+    if (currentUser.role === 'Administrador') { fetchUsers(); fetchSystemInfo(); }
   }, [currentUser]);
 
   const handleLogin = async (username: string, password: string): Promise<LoginStepResult> => {
@@ -174,6 +184,7 @@ export default function App() {
         .then((saved) => {
           setPortals((prev) => [saved, ...prev]);
           fetchActivity();
+          fetchSystemInfo();
           addNotification({ title: 'Portal agregado al catálogo', message: `"${saved.name}" registrado por ${currentUser?.name}.`, type: 'portal_added', severity: 'success', portalName: saved.name });
           addToast('success', 'Portal agregado con éxito', `"${saved.name}" registrado en el catálogo.`);
         })
@@ -199,6 +210,7 @@ export default function App() {
           setSelectedPortal(null);
         }
         fetchActivity();
+        fetchSystemInfo();
         addNotification({ title: 'Portal eliminado del catálogo', message: `"${portal.name}" fue retirado por ${currentUser?.name}.`, type: 'portal_deleted', severity: 'warning', portalName: portal.name });
         addToast('warning', 'Portal eliminado', `"${portal.name}" fue eliminado del catálogo institucional.`);
       })
@@ -231,7 +243,7 @@ export default function App() {
 
   const handleOpenPortal = (portal: Portal) => {
     api(`/api/portals/${portal.id}/open`, { method: 'POST' })
-      .then(fetchActivity)
+      .then(() => { fetchActivity(); fetchPortals(); })
       .catch(() => {});
     addNotification({ title: `Portal abierto: ${portal.name}`, message: `Destino institucional: ${portal.url}`, type: 'portal_opened', severity: 'info', portalName: portal.name });
     window.open(portal.url, '_blank', 'noopener,noreferrer');
@@ -239,19 +251,96 @@ export default function App() {
 
   const handleCopyUser = (username: string, portalName: string) => {
     const portal = portals.find((p) => p.name === portalName);
-    if (portal) api(`/api/portals/${portal.id}/copy-user`, { method: 'POST' }).then(fetchActivity).catch(() => {});
+    if (portal) api(`/api/portals/${portal.id}/copy-user`, { method: 'POST' }).then(() => { fetchActivity(); fetchPortals(); }).catch(() => {});
     addToast('success', 'Usuario copiado al portapapeles', `Usuario "${username}" de ${portalName}.`);
   };
 
   const handleCopyPassword = async (portal: Portal): Promise<string | null> => {
     try {
-      const { password } = await api(`/api/portals/${portal.id}/reveal-password`, { method: 'POST' });
+      const reveal = () => api(`/api/portals/${portal.id}/reveal-password`, { method: 'POST' });
+      let result;
+      try { result = await reveal(); } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('Reautenticación MFA requerida')) throw error;
+        if (!await requestMfa('reveal')) return null;
+        result = await reveal();
+      }
+      const { password } = result;
       fetchActivity();
+      fetchPortals();
+      fetchSystemInfo();
       addToast('info', 'Contraseña copiada al portapapeles', `Portal: ${portal.name}. Esta acción quedó registrada.`);
       return password;
     } catch (error) {
       addToast('warning', 'No se pudo revelar la contraseña', error instanceof Error ? error.message : undefined);
       return null;
+    }
+  };
+
+  const handleDownloadBackup = async () => {
+    try {
+      const backups = await api('/api/backups');
+      if (!backups.length) throw new Error('No hay respaldos disponibles');
+      const download = async () => {
+        const response = await fetch(`/api/backups/download/${encodeURIComponent(backups[0].name)}`, { credentials: 'include' });
+        if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || 'No se pudo descargar el respaldo');
+        const url = URL.createObjectURL(await response.blob());
+        const link = document.createElement('a'); link.href = url; link.download = backups[0].name; link.click(); URL.revokeObjectURL(url);
+      };
+      try { await download(); } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('Reautenticación MFA requerida')) throw error;
+        if (!await requestMfa('backup')) return;
+        await download();
+      }
+      addToast('success', 'Respaldo descargado', 'El archivo está cifrado y la descarga quedó auditada.');
+      fetchActivity();
+    } catch (error) { addToast('warning', 'No se pudo descargar el respaldo', error instanceof Error ? error.message : undefined); }
+  };
+
+  const requestMfa = (action: 'reveal' | 'backup' | 'import') => new Promise<boolean>((resolve) => setMfaRequest({ action, resolve }));
+
+  const handleImportExcel = async (files: FileList | null) => {
+    if (!files?.length) return;
+    if (!await requestMfa('import')) return;
+    try {
+      const rows: any[] = [];
+      for (const file of Array.from(files)) {
+        const sheet = await readSheet(file);
+        const headerIndex = sheet.findIndex((r) => r.some((v) => String(v || '').trim().toUpperCase() === 'CUENTA'));
+        if (headerIndex < 0) throw new Error(`${file.name}: no se encontró la columna CUENTA`);
+        const headers = sheet[headerIndex].map((v) => String(v || '').trim().toUpperCase());
+        const col = (name: string) => headers.indexOf(name);
+        const cuenta = col('CUENTA'), enlace = col('ENLACE'), admin = col('ADMIN'), usuario = col('NOMBRE DE USUARIO'), password = col('CONTRASEÑA');
+        if ([cuenta, enlace, admin, usuario, password].some((x) => x < 0)) throw new Error(`${file.name}: faltan columnas requeridas`);
+        for (const row of sheet.slice(headerIndex + 1)) {
+          if (!row[cuenta]) continue;
+          const base = String(row[enlace] || '').replace(/\/+$/, ''); const path = String(row[admin] || '').replace(/^\/+/, '');
+          rows.push({ name: String(row[cuenta]), url: `${base}/${path}`, username: String(row[usuario] || ''), password: String(row[password] || '') });
+        }
+      }
+      if (!rows.length) throw new Error('El archivo no contiene filas importables.');
+      setImportPreview(rows);
+    } catch (error) { addToast('warning', 'No se pudo importar Excel', error instanceof Error ? error.message : undefined); }
+    finally { if (importInputRef.current) importInputRef.current.value = ''; }
+  };
+
+  const completeMfa = async (code: string): Promise<string | null> => {
+    if (!mfaRequest) return 'Solicitud MFA no disponible.';
+    try {
+      await api('/api/auth/mfa/reauth', { method: 'POST', body: JSON.stringify({ code, action: mfaRequest.action }) });
+      const request = mfaRequest; setMfaRequest(null); request.resolve(true); return null;
+    } catch (error) { return error instanceof Error ? error.message : 'No se pudo validar el código MFA.'; }
+  };
+
+  const cancelMfa = () => { if (mfaRequest) { const request = mfaRequest; setMfaRequest(null); request.resolve(false); } };
+
+  const handleChangePassword = async (currentPassword: string, newPassword: string): Promise<string | null> => {
+    try {
+      await api('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) });
+      fetchActivity();
+      addToast('success', 'Contraseña actualizada', 'Tu nueva contraseña ya está activa.');
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : 'No se pudo cambiar la contraseña';
     }
   };
 
@@ -275,7 +364,15 @@ export default function App() {
       .catch((error) => addToast('warning', 'No se pudo resetear MFA', error.message));
   };
 
-  if (checkingSession) return <div className="min-h-screen bg-slate-900" />;
+  if (checkingSession) return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6 text-center">
+      <div className="text-slate-200">
+        <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-400 border-t-transparent" />
+        <p className="font-bold">Verificando conexión segura…</p>
+        <p className="mt-1 text-sm text-slate-400">Si tarda demasiado, verifica que el backend esté activo.</p>
+      </div>
+    </div>
+  );
 
   if (!currentUser) {
     return (
@@ -345,6 +442,7 @@ export default function App() {
                     {!isAdmin && <span className="text-[10px] bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-full font-bold">Modo Consulta y Acceso</span>}
                   </div>
                   <span className="text-[11px] font-semibold text-indigo-600 bg-indigo-50/80 border border-indigo-100/80 px-2.5 py-0.5 rounded-full">Red local activa</span>
+                  {isAdmin && <><input ref={importInputRef} type="file" accept=".xlsx" multiple className="hidden" onChange={(e) => handleImportExcel(e.target.files)} /><button onClick={() => importInputRef.current?.click()} className="rounded-xl border border-indigo-200 bg-white px-3 py-1.5 text-xs font-bold text-indigo-700">Importar Excel</button></>}
                 </div>
 
                 {filteredPortals.length > 0 ? (
@@ -363,6 +461,7 @@ export default function App() {
                         }}
                         onToggleStatus={handleToggleStatus}
                         onDeletePortal={handleDeletePortal}
+                        onEditPortal={(portal) => { setEditingPortal(portal); setIsAddModalOpen(true); }}
                       />
                     ))}
                   </div>
@@ -397,8 +496,8 @@ export default function App() {
           )}
 
           {currentTab === 'actividad' && isAdmin && <ActivityView logs={activityLogs} />}
-          {currentTab === 'usuarios' && isAdmin && <UsersView users={users} onResetMfa={handleResetMfa} />}
-          {currentTab === 'configuracion' && isAdmin && <SettingsView onUpdateLogo={handleUpdateLogo} logoRefreshKey={logoRefreshKey} onShowToast={addToast} />}
+          {currentTab === 'usuarios' && isAdmin && <UsersView users={users} onResetMfa={handleResetMfa} onChangeOwnPassword={() => setIsChangePasswordOpen(true)} />}
+          {currentTab === 'configuracion' && isAdmin && <SettingsView onUpdateLogo={handleUpdateLogo} onDownloadBackup={handleDownloadBackup} logoRefreshKey={logoRefreshKey} onShowToast={addToast} systemInfo={systemInfo} />}
         </main>
       </div>
 
@@ -416,6 +515,14 @@ export default function App() {
         currentUserRole={currentUser.role}
         onToggleStatus={handleToggleStatus}
       />
+
+      <ChangePasswordModal
+        isOpen={isChangePasswordOpen}
+        onClose={() => setIsChangePasswordOpen(false)}
+        onSubmit={handleChangePassword}
+      />
+      <MfaReauthModal isOpen={Boolean(mfaRequest)} action={mfaRequest?.action || 'reveal'} onClose={cancelMfa} onSubmit={completeMfa} />
+      {importPreview && <div className="fixed inset-0 z-[81] flex items-center justify-center bg-slate-950/60 p-4"><div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl"><h2 className="text-lg font-extrabold">Vista previa de importación</h2><p className="mt-1 text-sm text-slate-500">Se importarán {importPreview.length} portales. Las contraseñas no se muestran.</p><div className="mt-4 max-h-52 overflow-auto rounded-xl border"><table className="w-full text-left text-xs"><thead className="bg-slate-50"><tr><th className="p-2">Cuenta</th><th>URL administrativa</th><th>Usuario</th></tr></thead><tbody>{importPreview.slice(0,20).map((row,i)=><tr key={i} className="border-t"><td className="p-2">{row.name}</td><td>{row.url}</td><td>{row.username}</td></tr>)}</tbody></table></div><div className="mt-5 flex justify-end gap-3"><button onClick={()=>setImportPreview(null)} className="rounded-xl border px-4 py-2 text-sm font-bold">Cancelar</button><button onClick={async()=>{try{const result=await api('/api/portals/import',{method:'POST',body:JSON.stringify({rows:importPreview})});setImportPreview(null);addToast('success','Importación completada',`${result.imported} portales importados.`);fetchPortals();fetchActivity()}catch(error){addToast('warning','No se pudo importar Excel',error instanceof Error?error.message:undefined)}}} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-bold text-white">Importar {importPreview.length} portales</button></div></div></div>}
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>

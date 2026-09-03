@@ -13,6 +13,8 @@ https://localhost:8443 {
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "same-origin"
+		Content-Security-Policy "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
 	}
 
 	handle /api/* {

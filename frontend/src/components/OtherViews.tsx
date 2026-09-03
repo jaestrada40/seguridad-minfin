@@ -1,6 +1,6 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Activity, ShieldCheck, Clock, Lock, HardDrive, ImageUp, Trash2, RotateCcw, KeyRound } from 'lucide-react';
-import { ActivityLog, UserProfile } from '../types';
+import { ActivityLog, UserProfile, SystemInfo } from '../types';
 import { Logo } from './Logo';
 
 interface ActivityViewProps {
@@ -8,6 +8,12 @@ interface ActivityViewProps {
 }
 
 export function ActivityView({ logs }: ActivityViewProps) {
+  const [pageSize, setPageSize] = useState(10);
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(logs.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const visibleLogs = logs.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
   return (
     <div className="space-y-6">
       <div className="rounded-3xl border border-white/80 bg-white/70 backdrop-blur-xl p-6 shadow-xl shadow-slate-200/40">
@@ -22,11 +28,26 @@ export function ActivityView({ logs }: ActivityViewProps) {
           </span>
         </div>
 
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-xl border border-slate-200/60 bg-white/60 px-3.5 py-2.5 text-xs">
+          <span className="font-medium text-slate-500">{logs.length} registros disponibles</span>
+          <label className="flex items-center gap-2 font-semibold text-slate-600">
+            Mostrar
+            <select
+              value={pageSize}
+              onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 outline-none focus:border-indigo-400"
+            >
+              {[10, 20, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}
+            </select>
+            por página
+          </label>
+        </div>
+
         <div className="mt-4 divide-y divide-slate-100/70">
-          {logs.length === 0 ? (
+          {visibleLogs.length === 0 ? (
             <p className="py-8 text-center text-xs text-slate-400 italic">No hay eventos registrados todavía.</p>
           ) : (
-            logs.map((log) => (
+            visibleLogs.map((log) => (
               <div key={log.id} className="flex flex-col sm:flex-row sm:items-center justify-between py-3.5 text-xs gap-2">
                 <div className="flex items-start gap-3">
                   <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/90 border border-slate-200/60 text-slate-700 mt-0.5 shadow-2xs">
@@ -50,6 +71,16 @@ export function ActivityView({ logs }: ActivityViewProps) {
             ))
           )}
         </div>
+
+        {logs.length > pageSize && (
+          <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4 text-xs">
+            <span className="font-medium text-slate-500">Página {currentPage} de {totalPages}</span>
+            <div className="flex gap-2">
+              <button type="button" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-bold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-50">Anterior</button>
+              <button type="button" disabled={currentPage === totalPages} onClick={() => setPage(currentPage + 1)} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-bold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-50">Siguiente</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -58,9 +89,10 @@ export function ActivityView({ logs }: ActivityViewProps) {
 interface UsersViewProps {
   users: UserProfile[];
   onResetMfa: (user: UserProfile) => void;
+  onChangeOwnPassword: () => void;
 }
 
-export function UsersView({ users, onResetMfa }: UsersViewProps) {
+export function UsersView({ users, onResetMfa, onChangeOwnPassword }: UsersViewProps) {
   return (
     <div className="space-y-6">
       <div className="rounded-3xl border border-white/80 bg-white/70 backdrop-blur-xl p-6 shadow-xl shadow-slate-200/40">
@@ -69,7 +101,17 @@ export function UsersView({ users, onResetMfa }: UsersViewProps) {
             <h2 className="text-lg font-extrabold text-slate-900">Usuarios Autorizados</h2>
             <p className="text-xs text-slate-500 font-medium">Personal con permisos de consulta y administración en el catálogo</p>
           </div>
-          <span className="text-xs font-bold text-slate-500 bg-slate-100/80 px-3 py-1 rounded-full border border-slate-200/60">Total: {users.length}</span>
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onChangeOwnPassword}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white shadow-lg shadow-indigo-500/25 hover:bg-indigo-700 transition-all cursor-pointer"
+            >
+              <KeyRound className="h-3.5 w-3.5" />
+              <span>Cambiar mi contraseña</span>
+            </button>
+            <span className="text-xs font-bold text-slate-500 bg-slate-100/80 px-3 py-1 rounded-full border border-slate-200/60">Total: {users.length}</span>
+          </div>
         </div>
 
         <div className="mt-4 overflow-x-auto">
@@ -148,19 +190,21 @@ export function UsersView({ users, onResetMfa }: UsersViewProps) {
 
 interface SettingsViewProps {
   onUpdateLogo: (dataUrl: string | null) => void;
+  onDownloadBackup: () => void;
   logoRefreshKey: number;
   onShowToast: (type: 'success' | 'info' | 'warning', title: string, message?: string) => void;
+  systemInfo: SystemInfo | null;
 }
 
 const MAX_LOGO_BYTES = 500 * 1024;
-const ALLOWED_LOGO_TYPES = ['image/png', 'image/jpeg', 'image/svg+xml'];
+const ALLOWED_LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'];
 
-export function SettingsView({ onUpdateLogo, logoRefreshKey, onShowToast }: SettingsViewProps) {
+export function SettingsView({ onUpdateLogo, onDownloadBackup, logoRefreshKey, onShowToast, systemInfo }: SettingsViewProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleLogoFile = (file: File) => {
     if (!ALLOWED_LOGO_TYPES.includes(file.type)) {
-      onShowToast('warning', 'Formato no soportado', 'Use PNG, JPG o SVG.');
+      onShowToast('warning', 'Formato no soportado', 'Use PNG, JPG, WebP o SVG.');
       return;
     }
     if (file.size > MAX_LOGO_BYTES) {
@@ -188,14 +232,14 @@ export function SettingsView({ onUpdateLogo, logoRefreshKey, onShowToast }: Sett
               <ImageUp className="h-4 w-4 text-indigo-600" />
               Logo institucional
             </h3>
-            <p className="text-slate-600 mt-1 font-normal">Se muestra en el login y en la barra lateral. PNG, JPG o SVG, máx. 500KB.</p>
+            <p className="text-slate-600 mt-1 font-normal">Se muestra en el login y en la barra lateral. PNG, JPG, WebP o SVG, máx. 500KB.</p>
             <div className="mt-3.5 flex items-center gap-4">
               <Logo size={56} refreshKey={logoRefreshKey} />
               <div className="flex items-center gap-2">
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/png,image/jpeg,image/svg+xml"
+                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
                   className="hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
@@ -225,35 +269,94 @@ export function SettingsView({ onUpdateLogo, logoRefreshKey, onShowToast }: Sett
 
           <div className="rounded-2xl border border-slate-200/60 bg-white/60 backdrop-blur-xs p-5">
             <h3 className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
-              <HardDrive className="h-4 w-4 text-emerald-600" />
-              Parámetros de Red: Entorno Local
+              <HardDrive className="h-4 w-4 text-emerald-600" /> Respaldo cifrado
             </h3>
-            <p className="text-slate-600 mt-1 font-normal">Los portales registrados resuelven contra los servidores DNS internos de la infraestructura local.</p>
-            <div className="mt-3.5 grid grid-cols-1 sm:grid-cols-2 gap-2.5 font-mono text-[11px]">
-              <div className="rounded-xl bg-white/80 p-3 border border-slate-200/60 shadow-2xs">
-                <span className="text-slate-400 block text-[10px] uppercase font-sans font-bold tracking-wider mb-0.5">Dominio Local:</span>
-                <span className="font-bold text-slate-800">*.demo.local</span>
+            <p className="text-slate-600 mt-1 font-normal">Descarga el respaldo más reciente. Se solicitará MFA en cada descarga y quedará registrado en auditoría.</p>
+            <button type="button" onClick={onDownloadBackup} className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-700 transition-all cursor-pointer">
+              <HardDrive className="h-3.5 w-3.5" /><span>Descargar último respaldo</span>
+            </button>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200/60 bg-white/60 backdrop-blur-xs p-5">
+            <h3 className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
+              <HardDrive className="h-4 w-4 text-emerald-600" />
+              Parámetros de sesión y red
+            </h3>
+            <p className="text-slate-600 mt-1 font-normal">Valores reales con los que el backend está corriendo ahora mismo.</p>
+            {systemInfo ? (
+              <div className="mt-3.5 grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[11px]">
+                {[
+                  ['Origen permitido (CORS)', systemInfo.session.corsOrigin],
+                  ['Cookie de sesión', systemInfo.session.cookieSecure ? 'Secure — solo HTTPS' : 'Sin flag Secure (HTTP)'],
+                  ['Duración de sesión', `${systemInfo.session.sessionTtlHours} h`],
+                  ['Segundo factor', systemInfo.session.mfaAlgorithm],
+                  ['Bloqueo de login', systemInfo.session.loginLockout],
+                  ['Cabecera anti-CSRF', systemInfo.session.csrfHeader],
+                  ['Límite por consulta', `${systemInfo.catalog.portalsLimit} portales`],
+                  ['Usuarios activos', String(systemInfo.catalog.activeUsers)],
+                ].map(([k, v]) => (
+                  <div key={k} className="rounded-xl bg-white/80 p-3 border border-slate-200/60 shadow-2xs">
+                    <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider mb-0.5">{k}:</span>
+                    <span className="font-bold text-slate-800 font-mono break-all">{v}</span>
+                  </div>
+                ))}
               </div>
-              <div className="rounded-xl bg-white/80 p-3 border border-slate-200/60 shadow-2xs">
-                <span className="text-slate-400 block text-[10px] uppercase font-sans font-bold tracking-wider mb-0.5">Modo de sesión:</span>
-                <span className="font-bold text-slate-800">MFA obligatorio (TOTP)</span>
-              </div>
-            </div>
+            ) : (
+              <p className="mt-3.5 text-slate-400 italic text-[11px]">Cargando parámetros del entorno…</p>
+            )}
           </div>
 
           <div className="rounded-2xl border border-slate-200/60 bg-white/60 backdrop-blur-xs p-5">
             <h3 className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
               <Lock className="h-4 w-4 text-indigo-600" />
-              Bóveda de contraseñas
+              Bóveda de contraseñas (HashiCorp Vault)
             </h3>
             <p className="text-slate-600 mt-1 leading-relaxed font-normal">
-              Las contraseñas de portal se cifran en el servidor (Encrypt-then-MAC con HMAC-SHA256) y solo se descifran bajo demanda desde cada tarjeta de portal. Cada
-              revelación queda auditada en el módulo de Actividad.
+              Las contraseñas de portal no se guardan en la base local: viven cifradas en Vault y solo se descifran bajo demanda. Cada revelación queda auditada en Actividad.
             </p>
-            <div className="mt-3.5 flex items-center gap-2 text-slate-600 font-semibold bg-emerald-50/70 border border-emerald-200/60 rounded-xl px-3.5 py-2">
-              <span className="inline-flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>Estado: cifrado activo.</span>
-            </div>
+            {systemInfo ? (
+              <>
+                <div className="mt-3.5 grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[11px]">
+                  {[
+                    ['Dirección', systemInfo.vault.address],
+                    ['Ruta de secretos', systemInfo.vault.secretPath],
+                    ['Motor', systemInfo.vault.engine],
+                    ['Versión', systemInfo.vault.version ?? '—'],
+                    ['Portales con contraseña', `${systemInfo.catalog.portalsWithPassword} de ${systemInfo.catalog.portalsTotal}`],
+                    ['Revelaciones registradas', String(systemInfo.catalog.passwordReveals)],
+                  ].map(([k, v]) => (
+                    <div key={k} className="rounded-xl bg-white/80 p-3 border border-slate-200/60 shadow-2xs">
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider mb-0.5">{k}:</span>
+                      <span className="font-bold text-slate-800 font-mono break-all">{v}</span>
+                    </div>
+                  ))}
+                </div>
+                <div
+                  className={`mt-3 flex items-center gap-2 font-semibold rounded-xl px-3.5 py-2 border ${
+                    systemInfo.vault.reachable && systemInfo.vault.initialized && !systemInfo.vault.sealed
+                      ? 'text-emerald-700 bg-emerald-50/70 border-emerald-200/60'
+                      : 'text-amber-700 bg-amber-50/70 border-amber-200/60'
+                  }`}
+                >
+                  <span
+                    className={`inline-flex h-2 w-2 rounded-full ${
+                      systemInfo.vault.reachable && systemInfo.vault.initialized && !systemInfo.vault.sealed ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+                    }`}
+                  />
+                  <span>
+                    {!systemInfo.vault.reachable
+                      ? 'Vault no accesible desde el backend.'
+                      : systemInfo.vault.sealed
+                        ? 'Vault accesible pero sellado (secretos no disponibles).'
+                        : systemInfo.vault.initialized
+                          ? 'Vault operativo: inicializado y desellado.'
+                          : 'Vault accesible pero sin inicializar.'}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <p className="mt-3.5 text-slate-400 italic text-[11px]">Consultando estado de Vault…</p>
+            )}
           </div>
         </div>
       </div>
