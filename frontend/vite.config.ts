@@ -3,8 +3,16 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 
+// Ruta secreta bajo la que se sirve toda la app (ofuscación: `/` da 404 y
+// solo quien conoce esta ruta puede llegar al login). Se controla con la
+// variable de entorno APP_SECRET_PATH (en .env, no se sube a git). Si no se
+// define, la app se sirve en `/` como siempre.
+const rawBase = process.env.APP_SECRET_PATH || '/';
+const base = rawBase === '/' ? '/' : `/${rawBase.replace(/^\/+|\/+$/g, '')}/`;
+
 export default defineConfig(() => {
   return {
+    base,
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {

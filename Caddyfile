@@ -25,7 +25,22 @@ https://localhost:8443 {
 		reverse_proxy backend:8000
 	}
 
-	handle {
+	# La app se sirve solo bajo una ruta secreta (APP_SECRET_PATH en .env).
+	# Con el valor por defecto "/" el matcher cubre todo y se comporta como antes.
+	@app path {$APP_SECRET_PATH:/}*
+	handle @app {
 		reverse_proxy frontend:3000
+	}
+
+	# La ruta secreta sin barra final redirige a la versión con barra
+	# (en modo por defecto este bloque es inalcanzable: @app ya cubrió "/").
+	@app_exact path {$APP_SECRET_PATH:/}
+	handle @app_exact {
+		redir {$APP_SECRET_PATH:/}/ 308
+	}
+
+	# Cualquier otra ruta (incluida "/") no revela que hay algo acá.
+	handle {
+		respond "Not Found" 404
 	}
 }

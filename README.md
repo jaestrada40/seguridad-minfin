@@ -68,6 +68,15 @@ COOKIE_SECURE=false
 CORS_ORIGIN=http://localhost:3000
 ```
 
+## Ruta secreta (ofuscación)
+
+`APP_SECRET_PATH` en `.env` controla bajo qué ruta se sirve la app:
+
+- `APP_SECRET_PATH=/` (por defecto): la app está en la raíz, `https://localhost:8443/`.
+- `APP_SECRET_PATH=/mf-XXXXXX` (o cualquier ruta): `https://localhost:8443/` y cualquier otra ruta devuelven **404**; solo `https://localhost:8443/mf-XXXXXX/` lleva al login.
+
+Es una capa extra para que escáneres automáticos y curiosos vean un 404, **no** un reemplazo del login + MFA. Guarda la ruta en tu gestor de contraseñas y **bookmarkéala con la barra final**. Si se filtra o la olvidas, cambia el valor en `.env` y `docker compose --profile backend up -d --build frontend caddy`. `/api/*` y `/health` siguen en la raíz (necesarios para el healthcheck y las llamadas del propio frontend).
+
 ## Roles y permisos
 
 Roles reales en el backend: `Administrador`, `Operador`, `Auditor`. La interfaz solo distingue Administrador (acceso completo) del resto (solo consulta y apertura de portales).
