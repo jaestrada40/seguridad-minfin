@@ -1,0 +1,126 @@
+"""Backups cifrados automáticos de la base SQLite de SecureVault.
+
+Solo librería estándar. Corre como un servicio aparte de Docker Compose,
+lee la base en modo solo lectura desde el volumen `backend_data` y escribe
+respaldos cifrados en `/backups` (montado en ./backups del host — "otro
+disco" respecto al volumen de datos, cumpliendo el mínimo de la estrategia
+3-2-1). No sube nada a la nube: eso requiere credenciales del operador,
+ver README para conectar rclone/aws-cli manualmente sobre esta carpeta.
+
+Cifrado: misma construcción Encrypt-then-MAC con HMAC-SHA256 en modo
+contador que se usaba antes para las contraseñas de portal (ver historial),
+pero con una clave completamente separada (BACKUP_ENCRYPTION_KEY) — un
+atacante que solo comprometa la clave de la app no puede leer los backups,
+y viceversa.
+"""
+
+import base64
+import glob
+import hashlib
+import hmac
+import os
+import secrets
+import shutil
+import sqlite3
+import sys
+import time
+
+DB_PATH = os.getenv("DB_PATH", "/app/data/securevault.db")
+BACKUP_DIR = os.getenv("BACKUP_DIR", "/backups")
+BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", "change-this-local-backup-key")
+INTERVAL_SECONDS = int(os.getenv("BACKUP_INTERVAL_SECONDS", str(24 * 60 * 60)))
+RETENTION_COUNT = int(os.getenv("BACKUP_RETENTION_COUNT", "14"))
+CHUNK_SIZE = 64 * 1024
+
+
+def _keystream_at(key: bytes, offset: int, length: int) -> bytes:
+    """Keystream determinista para el rango [offset, offset+length), sin
+    reutilizar bytes entre llamadas siempre que offset avance monótonamente
+    — necesario para cifrar en streaming por chunks en vez de todo en memoria."""
+    block_size = hashlib.sha256().digest_size
+    block_index = offset // block_size
+    skip = offset % block_size
+    out = b""
+    counter = block_index
+    while len(out) < skip + length:
+        out += hmac.new(key, counter.to_bytes(8, "big"), hashlib.sha256).digest()
+        counter += 1
+    return out[skip:skip + length]
+
+
+def encrypt_file(src_path: str, dst_path: str) -> None:
+    master_key = hashlib.sha256(BACKUP_ENCRYPTION_KEY.encode()).digest()
+    nonce = secrets.token_bytes(16)
+    enc_key = hmac.new(master_key, nonce + b"enc", hashlib.sha256).digest()
+    mac_key = hmac.new(master_key, nonce + b"mac", hashlib.sha256).digest()
+
+    mac = hmac.new(mac_key, nonce, hashlib.sha256)
+    offset = 0
+    with open(src_path, "rb") as src, open(dst_path, "wb") as dst:
+        dst.write(nonce)
+        dst.write(b"\x00" * 32)  # placeholder para el tag, se rellena al final
+        while True:
+            chunk = src.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            ks = _keystream_at(enc_key, offset, len(chunk))
+            ct = bytes(a ^ b for a, b in zip(chunk, ks))
+            offset += len(chunk)
+            mac.update(ct)
+            dst.write(ct)
+        tag = mac.digest()
+        dst.seek(16)
+        dst.write(tag)
+
+
+def snapshot_db(tmp_path: str) -> None:
+    # sqlite3 backup API: copia consistente aunque el proceso principal esté escribiendo
+    src = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    dst = sqlite3.connect(tmp_path)
+    with dst:
+        src.backup(dst)
+    src.close()
+    dst.close()
+
+
+def prune_old_backups() -> None:
+    files = sorted(glob.glob(os.path.join(BACKUP_DIR, "securevault-*.enc")))
+    excess = len(files) - RETENTION_COUNT
+    for old_file in files[:max(excess, 0)]:
+        os.remove(old_file)
+
+
+def run_backup() -> None:
+    if not os.path.exists(DB_PATH):
+        print(f"[backup] {DB_PATH} no existe todavía, se omite este ciclo", flush=True)
+        return
+
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    tmp_snapshot = os.path.join(BACKUP_DIR, f".tmp-{timestamp}.db")
+    final_path = os.path.join(BACKUP_DIR, f"securevault-{timestamp}.enc")
+
+    try:
+        snapshot_db(tmp_snapshot)
+        encrypt_file(tmp_snapshot, final_path)
+        size_kb = os.path.getsize(final_path) / 1024
+        print(f"[backup] OK: {final_path} ({size_kb:.1f} KB)", flush=True)
+    finally:
+        if os.path.exists(tmp_snapshot):
+            os.remove(tmp_snapshot)
+
+    prune_old_backups()
+
+
+def main() -> None:
+    print(f"[backup] Iniciando daemon. Intervalo: {INTERVAL_SECONDS}s. Destino: {BACKUP_DIR}", flush=True)
+    while True:
+        try:
+            run_backup()
+        except Exception as e:
+            print(f"[backup] ERROR: {e}", file=sys.stderr, flush=True)
+        time.sleep(INTERVAL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

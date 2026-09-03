@@ -1,0 +1,6 @@
+{
+  "name": "SecureVault Local",
+  "description": "Catálogo seguro y profesional de portales y accesos institucionales para entornos locales.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

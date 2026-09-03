@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.py[cod]
+node_modules/
+dist/
+.pytest_cache/
+
+# Secretos de Vault (unseal key + tokens) y respaldos cifrados — nunca a git
+vault/keys/
+backups/
+caddy_data/
+caddy_config/
+
+# Documento interno de explicación de seguridad — nunca a git
+SEGURIDAD-EXPLICACION.md
+

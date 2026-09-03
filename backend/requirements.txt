@@ -1,0 +1,2 @@
+# Sin dependencias: el backend usa únicamente la librería estándar de Python
+# (http.server, sqlite3) para no requerir acceso a pypi.org durante el build.

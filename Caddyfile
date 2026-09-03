@@ -1,0 +1,29 @@
+{
+	# Certificado autofirmado generado automáticamente por la CA interna de Caddy
+	# (apropiado para "local"; para un dominio real, Caddy pediría uno público
+	# automáticamente vía ACME en vez de usar `tls internal`).
+	local_certs
+}
+
+https://localhost:8443 {
+	tls internal
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+	}
+
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	handle /health {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

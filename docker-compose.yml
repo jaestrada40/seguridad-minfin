@@ -1,0 +1,86 @@
+services:
+  vault:
+    profiles: [backend]
+    image: hashicorp/vault:1.17
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault_data:/vault/data
+      - ./vault/config:/vault/config:ro
+    entrypoint: ["vault"]
+    command: ["server", "-config=/vault/config/vault.hcl"]
+    ports:
+      - "127.0.0.1:8200:8200"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  vault-bootstrap:
+    profiles: [backend]
+    build: ./vault/bootstrap
+    environment:
+      VAULT_ADDR: http://vault:8200
+    volumes:
+      - ./vault/keys:/keys
+    depends_on:
+      vault:
+        condition: service_healthy
+
+  backend:
+    profiles: [backend]
+    build: ./backend
+    environment:
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET}
+      VAULT_ADDR: http://vault:8200
+      VAULT_KEYS_PATH: /keys/vault-keys.json
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost:8443}
+    volumes:
+      - backend_data:/app/data
+      - ./vault/keys:/keys:ro
+    depends_on:
+      vault-bootstrap:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  backup:
+    profiles: [backend]
+    build: ./backend
+    command: ["python", "-u", "scripts/backup_daemon.py"]
+    environment:
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY}
+    volumes:
+      - backend_data:/app/data:ro
+      - ./backups:/backups
+    depends_on:
+      backend:
+        condition: service_started
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  caddy:
+    profiles: [backend]
+    image: caddy:2-alpine
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "127.0.0.1:8443:8443"
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  backend_data:
+  vault_data:
+  caddy_data:
+  caddy_config:
