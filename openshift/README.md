@@ -134,6 +134,16 @@ oc logs job/backup-manual -n securevault
   Restaurar desde archivo) o con `scripts/restore_backup.py` dentro de un pod del
   backend. Al restaurar se cierra tu sesión (se reemplaza la tabla de sesiones):
   volvés a iniciar sesión.
+- **Backup del storage de Vault (contraseñas de portal):** aparte del backup de
+  la SQLite, el pod de Vault tiene un sidecar (`vault-backup`) que cada 24h
+  respalda cifrado `/vault/data` hacia el PVC `securevault-vault-backups`
+  (`backend/scripts/vault_backup_daemon.py`, retención 14 copias). Para
+  restaurar: escalar el StatefulSet `vault` a 0, correr
+  `scripts/restore_vault_backup.py <backup.tar.enc> /vault/data` sobre el
+  volumen, y volver a escalar a 1 (arranca sellado, se desella con la
+  `unseal_key` vigente al momento de ese backup). Este backup **no** reemplaza
+  la copia externa del Secret `securevault-vault-keys` — sin la `unseal_key`
+  correcta para esa fecha, el `.tar.enc` restaurado no se puede leer.
 - **Escala:** `backend` y `vault` son 1 réplica a propósito (SQLite y storage
   `file` sobre PVC RWO — `strategy: Recreate`). `frontend` y `proxy` escalan
   libremente.

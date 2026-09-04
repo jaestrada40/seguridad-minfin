@@ -45,3 +45,20 @@ spec:
     requests:
       storage: 2Gi
   # storageClassName: gp3-csi
+---
+# Backups del storage de Vault (contraseñas de portal), separados de
+# securevault-backups (que es solo la SQLite). Montado en el mismo pod de
+# Vault (sidecar vault-backup en 04-vault.yaml), así que no hay conflicto de
+# RWO multi-attach entre pods distintos.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: securevault-vault-backups
+  namespace: controlcenter
+  labels: {app.kubernetes.io/part-of: securevault}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+  # storageClassName: gp3-csi

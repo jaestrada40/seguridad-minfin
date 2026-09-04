@@ -94,6 +94,26 @@ spec:
           resources:
             requests: {cpu: 10m, memory: 32Mi}
             limits: {cpu: 100m, memory: 64Mi}
+
+        # Sidecar: respaldo cifrado periódico del storage de Vault (contraseñas
+        # de portal) hacia otro PVC (securevault-vault-backups). Comparte el
+        # volumen `data` en modo solo lectura — ver backend/scripts/vault_backup_daemon.py.
+        - name: vault-backup
+          image: srv-osnexus01.minfin.gob.gt:8006/securevault-backend:latest
+          imagePullPolicy: Always
+          command: ["python", "-u", "scripts/vault_backup_daemon.py"]
+          env:
+            - {name: VAULT_DATA_DIR, value: "/vault/data"}
+            - {name: BACKUP_DIR, value: "/vault-backups"}
+            - name: BACKUP_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: {name: securevault-app, key: BACKUP_ENCRYPTION_KEY}
+          volumeMounts:
+            - {name: data, mountPath: /vault/data, readOnly: true}
+            - {name: vault-backups, mountPath: /vault-backups}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -102,6 +122,9 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: securevault-vault-data
+        - name: vault-backups
+          persistentVolumeClaim:
+            claimName: securevault-vault-backups
         - name: config
           configMap:
             name: securevault-vault-config

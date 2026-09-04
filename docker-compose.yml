@@ -71,6 +71,21 @@ services:
       backend:
         condition: service_started
 
+  vault-backup:
+    profiles: [backend]
+    build: ./backend
+    command: ["python", "-u", "scripts/vault_backup_daemon.py"]
+    environment:
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY}
+    volumes:
+      - vault_data:/vault/data:ro
+      - ./vault-backups:/vault-backups
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      vault:
+        condition: service_healthy
+
   frontend:
     build:
       context: ./frontend
