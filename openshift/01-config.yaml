@@ -98,6 +98,23 @@ data:
     api_addr      = "http://vault:8200"
     ui            = false
     disable_mlock = true
+  # Config alternativa para cuando se migre a Integrated Storage (ver
+  # openshift/README.md, "Migración a Integrated Storage" y
+  # openshift/11-vault-raft-migrate-job.yaml). No se usa hasta que 04-vault.yaml
+  # apunte a esta clave en vez de vault.hcl.
+  vault-raft.hcl: |
+    storage "raft" {
+      path    = "/vault/data"
+      node_id = "vault-0"
+    }
+    listener "tcp" {
+      address     = "0.0.0.0:8200"
+      tls_disable = true
+    }
+    api_addr      = "http://vault:8200"
+    cluster_addr  = "http://vault:8201"
+    ui            = false
+    disable_mlock = true
 ---
 apiVersion: v1
 kind: ConfigMap

@@ -115,6 +115,63 @@ oc create job --from=cronjob/securevault-backup backup-manual -n securevault
 oc logs job/backup-manual -n securevault
 ```
 
+## 4.1 Migración a Integrated Storage (raft) — opcional
+
+Por defecto Vault usa `storage "file"` (un archivo por secreto en disco). El
+backup periódico (`backend/scripts/vault_backup_daemon.py`) funciona con eso,
+pero es un `tar` sobre archivos mientras Vault sigue corriendo — no un
+snapshot atómico garantizado por Vault. Migrar a `storage "raft"` (Integrated
+Storage) da acceso a `vault operator raft snapshot save/restore`, el
+mecanismo oficial y soportado por HashiCorp. Es opcional y no rompe nada si
+no se hace: el PVC `securevault-vault-data` sigue funcionando igual.
+
+**Antes de empezar:** tomá un backup manual de la SQLite y de Vault (ver
+sección "Verificación" para el manual de SQLite; para Vault, esperá a que
+corra el sidecar `vault-backup` al menos una vez, o disparalo a mano
+entrando al contenedor y corriendo `python scripts/vault_backup_daemon.py --once`).
+Esta migración toca el storage de Vault con datos reales — no es reversible
+una vez que borrás el PVC viejo, así que no lo borres hasta confirmar que
+todo quedó bien.
+
+```bash
+# 1. Detener Vault (la migración necesita que nada escriba en /vault/data)
+oc scale statefulset/vault -n controlcenter --replicas=0
+oc wait --for=delete pod/vault-0 -n controlcenter --timeout=60s
+
+# 2. PVC destino + Job de migración (lee de securevault-vault-data,
+#    escribe en securevault-vault-raft-data — el viejo no se toca)
+oc apply -f openshift/03-pvcs.yaml -n controlcenter
+oc apply -f openshift/11-vault-raft-migrate-job.yaml -n controlcenter
+oc wait --for=condition=complete job/securevault-vault-raft-migrate -n controlcenter --timeout=300s
+oc logs job/securevault-vault-raft-migrate -n controlcenter
+
+# 3. Apuntar Vault al storage raft: en openshift/04-vault.yaml cambiar (ver
+#    comentarios en el archivo) el claimName de `data` a
+#    securevault-vault-raft-data y el item de `config` a
+#    {key: vault-raft.hcl, path: vault.hcl}
+oc apply -f openshift/04-vault.yaml -n controlcenter
+oc scale statefulset/vault -n controlcenter --replicas=1
+oc rollout status statefulset/vault -n controlcenter
+
+# 4. Verificar que quedó en raft y que las contraseñas siguen ahí
+oc exec vault-0 -n controlcenter -c vault -- vault status   # Storage Type: raft
+# En la UI: revelar la contraseña de un portal que ya existía antes de migrar.
+
+# 5. Limpieza (solo después de confirmar todo lo anterior, y con tiempo
+#    prudente por si hace falta volver atrás):
+oc delete job securevault-vault-raft-migrate -n controlcenter
+# oc delete pvc securevault-vault-data -n controlcenter   # cuando estés 100% seguro
+```
+
+**Nota sobre el backup post-migración:** el sidecar `vault-backup` sigue
+corriendo igual (empaqueta lo que haya en `/vault/data`), pero con raft ese
+directorio es un único archivo `raft/vault.db` (BoltDB) — un `tar` en
+caliente sobre un solo archivo abierto es más propenso a quedar inconsistente
+que con el backend `file` (muchos archivos chicos). Si migrás a raft, lo
+ideal es reemplazar ese backup por `vault operator raft snapshot save`
+(atómico, oficial) — avisen si quieren que se prepare ese cambio en el
+script una vez migrado.
+
 ## 5. Notas y operación
 
 - **Vault sellado tras reinicio del pod:** el sidecar `unsealer` del pod de Vault

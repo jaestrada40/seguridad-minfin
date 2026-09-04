@@ -1,0 +1,74 @@
+# 11 — Job de migración de Vault: storage "file" -> storage "raft" (OPCIONAL)
+#
+# No forma parte del despliegue normal (00→10). Solo se aplica cuando se
+# decide migrar a Integrated Storage para poder usar `vault operator raft
+# snapshot save/restore` (snapshot atómico oficial) en vez del backup por
+# `tar` de backend/scripts/vault_backup_daemon.py.
+#
+# Procedimiento completo en openshift/README.md ("Migración a Integrated
+# Storage"). Resumen:
+#   1. Tomar un backup manual de SQLite Y de Vault antes de tocar nada.
+#   2. Escalar el StatefulSet vault a 0 réplicas (Vault debe estar detenido).
+#   3. oc apply -f openshift/11-vault-raft-migrate-job.yaml
+#   4. oc wait --for=condition=complete job/securevault-vault-raft-migrate --timeout=300s
+#   5. Verificar logs, cambiar vault.hcl a storage "raft" y el volumeMount de
+#      04-vault.yaml a securevault-vault-raft-data, reaplicar, escalar a 1.
+#   6. Confirmar `vault status` con Storage Type: raft antes de borrar nada
+#      del PVC securevault-vault-data viejo.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: securevault-vault-migrate-config
+  namespace: controlcenter
+  labels: {app.kubernetes.io/part-of: securevault}
+data:
+  migrate.hcl: |
+    storage_source "file" {
+      path = "/vault/data-source"
+    }
+    storage_destination "raft" {
+      path    = "/vault/data-raft"
+      node_id = "vault-0"
+    }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: securevault-vault-raft-migrate
+  namespace: controlcenter
+  labels: {app.kubernetes.io/part-of: securevault}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: srv-osnexus01.minfin.gob.gt
+      containers:
+        - name: migrate
+          image: srv-osnexus01.minfin.gob.gt:8006/vault:1.17
+          command: ["vault", "operator", "migrate", "-config=/migrate/migrate.hcl"]
+          env:
+            - {name: HOME, value: "/tmp"}
+          volumeMounts:
+            - {name: source, mountPath: /vault/data-source, readOnly: true}
+            - {name: dest, mountPath: /vault/data-raft}
+            - {name: config, mountPath: /migrate, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: source
+          persistentVolumeClaim:
+            claimName: securevault-vault-data
+        - name: dest
+          persistentVolumeClaim:
+            claimName: securevault-vault-raft-data
+        - name: config
+          configMap:
+            name: securevault-vault-migrate-config
+            items: [{key: migrate.hcl, path: migrate.hcl}]

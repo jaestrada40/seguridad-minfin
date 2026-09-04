@@ -62,3 +62,20 @@ spec:
     requests:
       storage: 2Gi
   # storageClassName: gp3-csi
+---
+# Solo se usa durante la migración opcional de storage "file" -> "raft"
+# (ver openshift/README.md, sección "Migración a Integrated Storage"). El PVC
+# securevault-vault-data (file) NO se borra durante la migración — queda como
+# respaldo/rollback hasta confirmar que raft funciona bien.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: securevault-vault-raft-data
+  namespace: controlcenter
+  labels: {app.kubernetes.io/part-of: securevault}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+  # storageClassName: gp3-csi

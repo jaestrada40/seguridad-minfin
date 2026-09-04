@@ -16,6 +16,11 @@ spec:
     - name: http
       port: 8200
       targetPort: 8200
+    # Puerto de cluster de raft. Sin uso mientras storage siga siendo "file";
+    # necesario si se migra a Integrated Storage (ver openshift/README.md).
+    - name: cluster
+      port: 8201
+      targetPort: 8201
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -46,6 +51,7 @@ spec:
           args: ["server", "-config=/vault/config/vault.hcl"]
           ports:
             - {name: http, containerPort: 8200}
+            - {name: cluster, containerPort: 8201}
           env:
             - {name: VAULT_ADDR, value: "http://127.0.0.1:8200"}
             - {name: SKIP_CHOWN, value: "true"}
@@ -119,6 +125,11 @@ spec:
           emptyDir: {}
         # PVC nombrado (03-pvcs) en vez de volumeClaimTemplates: nombre estable,
         # fácil de respaldar/restaurar a mano.
+        #
+        # Migración a raft (opcional, ver README): cambiar claimName acá a
+        # securevault-vault-raft-data y, en `config` más abajo, el item a
+        # {key: vault-raft.hcl, path: vault.hcl} — recién después de correr
+        # 11-vault-raft-migrate-job.yaml con el StatefulSet escalado a 0.
         - name: data
           persistentVolumeClaim:
             claimName: securevault-vault-data
